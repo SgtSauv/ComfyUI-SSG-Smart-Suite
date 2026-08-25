@@ -15,6 +15,9 @@ An 8-core custom node ecosystem engineered to eliminate canvas wire clutter, pro
 * **Passive Warning Telemetry:** Real-time chassis outlines provide visual feedback on synchronization and routing state without UI popup interruptions or unwanted canvas resets.
 * **Compact Mini-Bar HUD:** Collapsing nodes into mini-bar form automatically streamlines header titles and enables a high-contrast Alienware Blue status tooltip displaying live channel IDs, track counts, and operating modes.
 
+<img width="2560" height="1380" alt="Screenshot 2026-08-25 084033" src="https://github.com/user-attachments/assets/1b861c28-e147-4b0d-b956-c7d1a090d11f" />
+<img width="2560" height="1380" alt="Screenshot 2026-08-25 084128" src="https://github.com/user-attachments/assets/c59687d9-64c5-4304-a20a-9ca821b92910" />
+
 ---
 
 ## 📦 Installation
