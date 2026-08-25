@@ -25,7 +25,7 @@ An 8-core custom node ecosystem engineered to eliminate canvas wire clutter, pro
 cd ComfyUI/custom_nodes
 
 2. Clone this repository:
-git clone https://github.com/sgtsauv-maker/ComfyUI-SSG-Smart-Suite.git
+git clone https://github.com/SgtSauv/ComfyUI-SSG-Smart-Suite.git
 
 3. Restart ComfyUI.
 
