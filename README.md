@@ -23,10 +23,6 @@
 * **SSG Smart HUD (`Alt + S`):** A floating mission-control directory for monitoring live channels, switching states, focusing nodes, and triggering canvas-wide glow beacons[cite: 5].
 * **Dynamic Smart Socket:** Universal hardware transceiver that morphs its input/output pins dynamically to host zero-wire companion appliances (like Face Detailers, LoRA Decks, and Processors)[cite: 4, 5].
 
-<img width="2560" height="1380" alt="Screenshot 2026-08-25 151101" src="https://github.com/user-attachments/assets/da044147-5a44-4ec6-a21a-d73521e5932b" />
-
-<img width="2560" height="1380" alt="Screenshot 2026-08-25 084128" src="https://github.com/user-attachments/assets/c59687d9-64c5-4304-a20a-9ca821b92910" />
-
 ---
 
 ## ⚡ Installation
