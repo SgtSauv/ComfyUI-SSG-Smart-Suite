@@ -3,6 +3,8 @@
 [![GitHub](https://img.shields.io/badge/GitHub-Repository-181717?logo=github)](https://github.com/SgtSauv/ComfyUI-SSG-Smart-Suite)
 [![Civitai](https://img.shields.io/badge/Civitai-Model_Page-0080FF?logo=civitai)](https://civitai.com/models/2889469/comfyui-ssg-smart-suite)
 [![Civitai Red](https://img.shields.io/badge/Civitai_Red-Model_Page-E53935?logo=civitai)](https://civitai.red/models/2889469/comfyui-ssg-smart-suite)
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-orange?style=flat-square&logo=buy-me-a-coffee)](https://www.buymeacoffee.com/sgtsauv)
+
 
 > *"We build tools that fix the engine; we do not repaint the chassis."*[cite: 2, 5]
 
@@ -139,3 +141,9 @@ For the exhaustive engineering manual covering client/server PyTorch hooks[cite:
 * **Civitai Red:** [SSG Smart Suite on Civitai Red](https://civitai.red/models/2889469/comfyui-ssg-smart-suite)
 
 Created by **SgtSauv**[cite: 2]
+
+---
+### Support
+If you find these nodes helpful and want to support continued development:
+
+[![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-Donate-orange?style=for-the-badge&logo=buy-me-a-coffee)](https://www.buymeacoffee.com/sgtsauv)
