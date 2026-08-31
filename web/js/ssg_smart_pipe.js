@@ -15,7 +15,8 @@ import {
     findTrueUpstreamAnchor,
     registerChannel,
     forceNetworkUpdate,
-    syncIncomingProperties
+    syncIncomingProperties,
+    getAllGraphNodes
 } from "./ssg_core_utils.js";
 
 function getGraphLink(app, node, linkId) {
@@ -55,19 +56,10 @@ function getNextSequentialPipeName(app, currentNode) {
     const basePrefix = "SSG_Pipe_";
     let highestIndex = 0;
 
-    const allNodes = [];
-    function collectNodes(targetGraph) {
-        if (!targetGraph) return;
-        const nodes = targetGraph._nodes || targetGraph.nodes || [];
-        for (const n of nodes) {
-            allNodes.push(n);
-            if (n?.subgraph) collectNodes(n.subgraph);
-        }
-    }
-    if (app?.graph) collectNodes(app.graph);
+    const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
 
     for (const n of allNodes) {
-        if (n.type === "SSGSmartPipe" && n !== currentNode) {
+        if (n && n.type === "SSGSmartPipe" && n !== currentNode) {
             const val = n.properties?.channel_id;
             if (val && val.startsWith(basePrefix)) {
                 const num = parseInt(val.substring(basePrefix.length), 10);
@@ -77,6 +69,17 @@ function getNextSequentialPipeName(app, currentNode) {
             }
         }
     }
+
+    const registryKeys = Object.keys(window.SSG_PipeRegistry || {});
+    for (const key of registryKeys) {
+        if (key.startsWith(basePrefix)) {
+            const num = parseInt(key.substring(basePrefix.length), 10);
+            if (!isNaN(num) && num > highestIndex) {
+                highestIndex = num;
+            }
+        }
+    }
+
     return `${basePrefix}${highestIndex + 1}`;
 }
 
@@ -157,7 +160,10 @@ export function setupSmartPipe(nodeType, nodeData, app) {
             }
         }
 
-        if (node.graph) node.graph.setDirtyCanvas(true, true);
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
     };
 
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;
@@ -207,7 +213,6 @@ export function setupSmartPipe(nodeType, nodeData, app) {
             const drawHeight = 22;
 
             ctx.save();
-            // Background Pill Bar
             ctx.fillStyle = "rgba(15, 18, 22, 0.85)";
             ctx.strokeStyle = "rgba(0, 229, 255, 0.35)";
             ctx.lineWidth = 1;
@@ -216,7 +221,6 @@ export function setupSmartPipe(nodeType, nodeData, app) {
             ctx.fill();
             ctx.stroke();
 
-            // Centered Alienware Blue Text
             ctx.font = "bold 11px 'Courier New', monospace";
             ctx.fillStyle = AW_BLUE;
             ctx.textAlign = "center";
@@ -372,6 +376,27 @@ export function setupSmartPipe(nodeType, nodeData, app) {
         };
 
         node.refreshSlotLayout();
+
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
+    };
+
+    const origOnRemoved = nodeType.prototype.onRemoved;
+    nodeType.prototype.onRemoved = function () {
+        if (origOnRemoved) origOnRemoved.apply(this, arguments);
+
+        const node = this;
+        const chanId = node.properties?.channel_id;
+
+        if (chanId && window.SSG_PipeRegistry && window.SSG_PipeRegistry[chanId]) {
+            delete window.SSG_PipeRegistry[chanId];
+        }
+
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+        }, 30);
     };
 
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;
@@ -406,14 +431,12 @@ export function setupSmartPipe(nodeType, nodeData, app) {
                     if (link) {
                         const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
                         
-                        // Data Type Mismatch Check (excluding universal wildcards)
                         const expectedType = manifestTrack.type || "*";
                         const actualType = resolved.type || "*";
                         if (expectedType !== "*" && actualType !== "*" && expectedType !== actualType) {
                             hasTypeMismatch = true;
                         }
 
-                        // Name Mismatch Check
                         const expectedName = manifestTrack.name || `SSG_${i}`;
                         const actualName = resolved.name || "◦";
                         if (expectedName !== actualName) {

@@ -18,6 +18,18 @@ if (!window.SSG_PipeRegistry) {
     window.SSG_PipeRegistry = {};
 }
 
+if (!window.SSG_ModuleRegistry) {
+    window.SSG_ModuleRegistry = {};
+}
+
+if (!window.SSG_SocketRegistry) {
+    window.SSG_SocketRegistry = {};
+}
+
+if (!window.SSG_ActiveHighlights) {
+    window.SSG_ActiveHighlights = new Set();
+}
+
 /**
  * Universal property synchronizer for LiteGraph configure lifecycle.
  */
@@ -34,7 +46,8 @@ export function syncIncomingProperties(node, info) {
 export function sanitizeAndTruncateText(str, maxLen = 16) {
     if (!str || typeof str !== "string") return "";
     const cleanStr = str.trim();
-    return cleanStr.length > maxLen ? cleanStr.substring(0, maxLen) : cleanStr;
+    const sliced = cleanStr.length > maxLen ? cleanStr.substring(0, maxLen) : cleanStr;
+    return sliced.trim();
 }
 
 export function applyDynamicShavePass(node) {
@@ -46,7 +59,8 @@ export function applyDynamicShavePass(node) {
         "SSGSmartGateRelay": { full: "SSG Smart Gate Relay", shaved: "Relay" },
         "SSGSmartGateReturn": { full: "SSG Smart Gate Return", shaved: "Return" },
         "SSGSmartVault": { full: "SSG Smart Vault", shaved: "Vault" },
-        "SSGSmartTag": { full: "SSG Smart Tag", shaved: "Tag" }
+        "SSGSmartTag": { full: "SSG Smart Tag", shaved: "Tag" },
+        "SSGSmartSocket": { full: "SSG Smart Socket", shaved: "Socket" }
     };
 
     const map = typeNameMap[node.type];
@@ -64,11 +78,22 @@ export function applyDynamicShavePass(node) {
 }
 
 export function drawSSGWarningOutline(node, ctx, tierColor) {
-    if (!tierColor) return;
+    const isHighlighted = isNodeChannelHighlighted(node);
+
+    if (!tierColor && !isHighlighted) return;
 
     ctx.save();
-    ctx.strokeStyle = tierColor;
-    ctx.lineWidth = 2.5;
+
+    if (isHighlighted) {
+        ctx.strokeStyle = AW_BLUE;
+        ctx.lineWidth = 3.5;
+        ctx.shadowColor = AW_BLUE;
+        ctx.shadowBlur = 12;
+    } else {
+        ctx.strokeStyle = tierColor;
+        ctx.lineWidth = 2.5;
+    }
+
     ctx.beginPath();
 
     if (node.flags?.collapsed) {
@@ -117,6 +142,22 @@ export function drawMasterGlobalTooltip(node, ctx, app, labelText) {
     ctx.restore();
 }
 
+export function getAllGraphNodes(targetGraph) {
+    const nodes = [];
+    function recurse(g) {
+        if (!g) return;
+        const localNodes = g._nodes || g.nodes || [];
+        for (const n of localNodes) {
+            if (!n) continue;
+            nodes.push(n);
+            const sub = n.subgraph || n.inner_graph;
+            if (sub) recurse(sub);
+        }
+    }
+    recurse(targetGraph);
+    return nodes;
+}
+
 export function findGraphAndNode(app, callingNode, nodeId) {
     if (nodeId == null) return null;
     const strId = String(nodeId);
@@ -148,6 +189,87 @@ export function findGraphAndNode(app, callingNode, nodeId) {
     }
 
     return null;
+}
+
+export function focusAndCenterOnNode(app, targetNode) {
+    if (!targetNode || !app?.canvas) return;
+
+    if (targetNode.graph && app.canvas.graph !== targetNode.graph) {
+        if (typeof app.canvas.openSubgraph === "function") {
+            app.canvas.openSubgraph(targetNode.graph);
+        } else if (typeof app.canvas.setGraph === "function") {
+            app.canvas.setGraph(targetNode.graph);
+        }
+    }
+
+    if (typeof app.canvas.centerOnNode === "function") {
+        app.canvas.centerOnNode(targetNode);
+    } else {
+        app.canvas.ds.offset[0] = -targetNode.pos[0] + (app.canvas.canvas.width / 2) - (targetNode.size[0] / 2);
+        app.canvas.ds.offset[1] = -targetNode.pos[1] + (app.canvas.canvas.height / 2) - (targetNode.size[1] / 2);
+    }
+
+    app.canvas.selectNode(targetNode);
+    app.graph?.setDirtyCanvas(true, true);
+}
+
+export function toggleChannelHighlight(channelId) {
+    if (!channelId) return;
+    if (window.SSG_ActiveHighlights.has(channelId)) {
+        window.SSG_ActiveHighlights.delete(channelId);
+    } else {
+        window.SSG_ActiveHighlights.add(channelId);
+    }
+}
+
+export function isChannelHighlighted(channelId) {
+    return !!channelId && window.SSG_ActiveHighlights.has(channelId);
+}
+
+export function isNodeChannelHighlighted(node) {
+    if (!node || window.SSG_ActiveHighlights.size === 0) return false;
+
+    // 1. Direct Broadcaster/Receiver Properties (Pipes, Routers, Gates, Vaults, Sockets)
+    const chanId = node.properties?.channel_id || node.properties?.bound_channel || node.properties?.vault_id;
+    if (chanId) {
+        const cleanBase = chanId.replace(/_TX$/, "").replace(/_RX$/, "");
+        if (
+            window.SSG_ActiveHighlights.has(chanId) ||
+            window.SSG_ActiveHighlights.has(cleanBase) ||
+            window.SSG_ActiveHighlights.has(`${cleanBase}_TX`) ||
+            window.SSG_ActiveHighlights.has(`${cleanBase}_RX`)
+        ) {
+            return true;
+        }
+    }
+
+    // 2. Bound Module Target Socket Property (SSG Smart Modules linked to Socket)
+    const targetSockProp = node.properties?.target_socket;
+    if (targetSockProp) {
+        const cleanTarget = String(targetSockProp).trim();
+        if (window.SSG_ActiveHighlights.has(cleanTarget)) {
+            return true;
+        }
+    }
+
+    // 3. Dropdown Widget Bindings (Satellites, Relays, Returns & Module Widgets)
+    if (node.widgets) {
+        const chW = node.widgets.find(w => w.name === "channel" || w.name === "target_socket");
+        if (chW && chW.value) {
+            const rawVal = String(chW.value).trim();
+            const cleanBase = rawVal.replace(/_TX$/, "").replace(/_RX$/, "");
+            if (
+                window.SSG_ActiveHighlights.has(rawVal) ||
+                window.SSG_ActiveHighlights.has(cleanBase) ||
+                window.SSG_ActiveHighlights.has(`${cleanBase}_TX`) ||
+                window.SSG_ActiveHighlights.has(`${cleanBase}_RX`)
+            ) {
+                return true;
+            }
+        }
+    }
+
+    return false;
 }
 
 const KNOWN_MULTI_OUTPUT_MAPS = {
@@ -271,22 +393,6 @@ export function findTrueUpstreamAnchor(app, callingNode, originNodeId, originSlo
     };
 }
 
-export function getAllGraphNodes(targetGraph) {
-    const nodes = [];
-    function recurse(g) {
-        if (!g) return;
-        const localNodes = g._nodes || g.nodes || [];
-        for (const n of localNodes) {
-            if (!n) continue;
-            nodes.push(n);
-            const sub = n.subgraph || n.inner_graph;
-            if (sub) recurse(sub);
-        }
-    }
-    recurse(targetGraph);
-    return nodes;
-}
-
 export function scanActiveBroadcasters(app) {
     if (!app?.graph) return [];
 
@@ -296,7 +402,6 @@ export function scanActiveBroadcasters(app) {
     for (const node of allNodes) {
         if (!node) continue;
 
-        // Smart Vault intentionally excluded from wireless broadcast registry
         if (node.type === "SSGSmartPipe" || node.type === "SSGSmartRouter") {
             const val = node.properties?.channel_id;
             if (val) activeChannels.add(val);
@@ -316,6 +421,36 @@ export function scanActiveBroadcasters(app) {
     }
 
     return Array.from(activeChannels);
+}
+
+export function scanActiveSockets(app) {
+    if (!app?.graph) return [];
+
+    const activeSocketIds = new Set();
+    const allNodes = getAllGraphNodes(app.graph);
+
+    for (const node of allNodes) {
+        if (node && node.type === "SSGSmartSocket") {
+            const chanId = node.properties?.channel_id;
+            if (chanId) {
+                activeSocketIds.add(chanId);
+                window.SSG_SocketRegistry[chanId] = {
+                    node: node,
+                    module_id: node.properties?.module_id || null,
+                    channel_id: chanId,
+                    bypass: !!node.properties?.bypass
+                };
+            }
+        }
+    }
+
+    for (const chan in window.SSG_SocketRegistry) {
+        if (!activeSocketIds.has(chan)) {
+            delete window.SSG_SocketRegistry[chan];
+        }
+    }
+
+    return Array.from(activeSocketIds);
 }
 
 export function registerChannel(channelName, tracks, explicitGen = null, is_editing = false) {
@@ -346,16 +481,30 @@ export function forceNetworkUpdate(app) {
     if (app?.graph) {
         hydrateSSGNetwork(app);
         scanActiveBroadcasters(app);
+        scanActiveSockets(app);
 
         const allNodes = getAllGraphNodes(app.graph);
 
         for (const node of allNodes) {
+            if (!node) continue;
+
+            // Trigger dropdown refreshes across all wireless receivers
             if (
-                node.type === "SSGSmartSatellite" &&
+                (node.type === "SSGSmartSatellite" ||
+                 node.type === "SSGSmartGateRelay" ||
+                 node.type === "SSGSmartGateReturn") &&
                 typeof node._ssgRefreshDropdown === "function"
             ) {
                 node._ssgRefreshDropdown();
             }
+
+            if (typeof node._ssgRefreshSocketDropdown === "function") {
+                node._ssgRefreshSocketDropdown();
+            }
+        }
+
+        if (typeof window.SSG_updateHUDState === "function") {
+            window.SSG_updateHUDState(app);
         }
 
         app.graph.setDirtyCanvas(true, true);
@@ -369,7 +518,6 @@ export function hydrateSSGNetwork(app) {
     for (const node of allNodes) {
         if (!node) continue;
 
-        // Smart Vault intentionally excluded from wireless broadcast hydration
         if (node.type === "SSGSmartPipe" || node.type === "SSGSmartRouter") {
             const isLocked = node.properties?.is_locked === true;
             if (isLocked) {

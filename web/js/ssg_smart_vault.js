@@ -12,7 +12,9 @@ import {
     drawSSGWarningOutline,
     drawMasterGlobalTooltip,
     findTrueUpstreamAnchor,
-    syncIncomingProperties
+    syncIncomingProperties,
+    forceNetworkUpdate,
+    getAllGraphNodes
 } from "./ssg_core_utils.js";
 
 function getGraphLink(app, node, linkId) {
@@ -52,21 +54,11 @@ function getNextSequentialVaultName(app, currentNode) {
     const basePrefix = "SSG_Vault_";
     let highestIndex = 0;
 
-    const allNodes = [];
-    function collectNodes(graph) {
-        if (!graph) return;
-        const nodes = graph._nodes || graph.nodes || [];
-        for (const n of nodes) {
-            allNodes.push(n);
-            const sub = n?.subgraph || n?.inner_graph;
-            if (sub) collectNodes(sub);
-        }
-    }
-    if (app?.graph) collectNodes(app.graph);
+    const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
 
     for (const n of allNodes) {
-        if (n.type === "SSGSmartVault" && n !== currentNode) {
-            const val = n.properties?.channel_id;
+        if (n && n.type === "SSGSmartVault" && n !== currentNode) {
+            const val = n.properties?.channel_id || n.properties?.vault_id;
             if (val && val.startsWith(basePrefix)) {
                 const num = parseInt(val.substring(basePrefix.length), 10);
                 if (!isNaN(num) && num > highestIndex) {
@@ -93,6 +85,7 @@ export function setupSmartVault(nodeType, nodeData, app) {
             clonedNode.properties.is_locked = false;
             clonedNode.properties.vault_manifest = "";
             clonedNode.properties.channel_id = getNextSequentialVaultName(app, clonedNode);
+            clonedNode.properties.vault_id = clonedNode.properties.channel_id;
         }
         return clonedNode;
     };
@@ -105,6 +98,10 @@ export function setupSmartVault(nodeType, nodeData, app) {
 
         const node = this;
         node.properties = node.properties || {};
+
+        if (!node.properties.channel_id && node.properties.vault_id) {
+            node.properties.channel_id = node.properties.vault_id;
+        }
 
         const manifestVal = node.properties.vault_manifest;
 
@@ -170,7 +167,10 @@ export function setupSmartVault(nodeType, nodeData, app) {
             }
         }
 
-        if (node.graph) node.graph.setDirtyCanvas(true, true);
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
     };
 
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;
@@ -186,6 +186,7 @@ export function setupSmartVault(nodeType, nodeData, app) {
         if (!node.properties.channel_id) {
             node.properties.channel_id = getNextSequentialVaultName(app, node);
         }
+        node.properties.vault_id = node.properties.channel_id;
 
         if (node.properties.vault_manifest === undefined) {
             node.properties.vault_manifest = "";
@@ -229,6 +230,7 @@ export function setupSmartVault(nodeType, nodeData, app) {
                 if (val === true && flushWidget) {
                     flushWidget.value = false;
                 }
+                forceNetworkUpdate(app);
                 if (node.graph) node.graph.setDirtyCanvas(true, true);
             };
         }
@@ -240,6 +242,7 @@ export function setupSmartVault(nodeType, nodeData, app) {
                 if (val === true && cacheWidget) {
                     cacheWidget.value = false;
                 }
+                forceNetworkUpdate(app);
                 if (node.graph) node.graph.setDirtyCanvas(true, true);
             };
         }
@@ -412,6 +415,7 @@ export function setupSmartVault(nodeType, nodeData, app) {
                 }
 
                 node.refreshSlotLayout();
+                forceNetworkUpdate(app);
             }
         );
 
@@ -422,6 +426,19 @@ export function setupSmartVault(nodeType, nodeData, app) {
         };
 
         node.refreshSlotLayout();
+
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
+    };
+
+    const origOnRemoved = nodeType.prototype.onRemoved;
+    nodeType.prototype.onRemoved = function () {
+        if (origOnRemoved) origOnRemoved.apply(this, arguments);
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+        }, 30);
     };
 
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;
@@ -430,7 +447,7 @@ export function setupSmartVault(nodeType, nodeData, app) {
 
         const node = this;
 
-        const channelName = node.properties.channel_id;
+        const channelName = node.properties.channel_id || node.properties.vault_id;
         const flushWidget = node.widgets?.find(w => w.name === "flush_switch");
         const cacheWidget = node.widgets?.find(w => w.name === "cache_switch");
 

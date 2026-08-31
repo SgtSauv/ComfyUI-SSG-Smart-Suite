@@ -15,7 +15,8 @@ import {
     findTrueUpstreamAnchor,
     registerChannel,
     forceNetworkUpdate,
-    syncIncomingProperties
+    syncIncomingProperties,
+    getAllGraphNodes
 } from "./ssg_core_utils.js";
 
 function getGraphLink(app, node, linkId) {
@@ -55,27 +56,26 @@ function getNextSequentialRouterName(app, currentNode) {
     const basePrefix = "SSG_Router_";
     let highestIndex = 0;
 
-    const allNodes = [];
-    function collectNodes(graph) {
-        if (!graph) return;
-        const nodes = graph._nodes || graph.nodes || [];
-        for (const n of nodes) {
-            allNodes.push(n);
-            const sub = n?.subgraph || n?.inner_graph;
-            if (sub) collectNodes(sub);
-        }
-    }
-
-    if (app?.graph) collectNodes(app.graph);
+    const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
 
     for (const n of allNodes) {
-        if (n.type === "SSGSmartRouter" && n !== currentNode) {
+        if (n && n.type === "SSGSmartRouter" && n !== currentNode) {
             const val = n.properties?.channel_id;
             if (val && val.startsWith(basePrefix)) {
                 const num = parseInt(val.substring(basePrefix.length), 10);
                 if (!isNaN(num) && num > highestIndex) {
                     highestIndex = num;
                 }
+            }
+        }
+    }
+
+    const registryKeys = Object.keys(window.SSG_PipeRegistry || {});
+    for (const key of registryKeys) {
+        if (key.startsWith(basePrefix)) {
+            const num = parseInt(key.substring(basePrefix.length), 10);
+            if (!isNaN(num) && num > highestIndex) {
+                highestIndex = num;
             }
         }
     }
@@ -180,7 +180,10 @@ export function setupSmartRouter(nodeType, nodeData, app) {
             }
         }
 
-        if (node.graph) node.graph.setDirtyCanvas(true, true);
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
     };
 
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;
@@ -273,6 +276,7 @@ export function setupSmartRouter(nodeType, nodeData, app) {
             bankWidget.callback = function () {
                 if (origBankCallback) origBankCallback.apply(this, arguments);
                 node.refreshSlotLayout();
+                forceNetworkUpdate(app);
             };
         }
 
@@ -490,6 +494,27 @@ export function setupSmartRouter(nodeType, nodeData, app) {
         };
 
         node.refreshSlotLayout();
+
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
+    };
+
+    const origOnRemoved = nodeType.prototype.onRemoved;
+    nodeType.prototype.onRemoved = function () {
+        if (origOnRemoved) origOnRemoved.apply(this, arguments);
+
+        const node = this;
+        const chanId = node.properties?.channel_id;
+
+        if (chanId && window.SSG_PipeRegistry && window.SSG_PipeRegistry[chanId]) {
+            delete window.SSG_PipeRegistry[chanId];
+        }
+
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+        }, 30);
     };
 
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;

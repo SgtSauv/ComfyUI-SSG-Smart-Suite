@@ -16,7 +16,8 @@ import {
     registerChannel,
     getChannelRecord,
     forceNetworkUpdate,
-    syncIncomingProperties
+    syncIncomingProperties,
+    getAllGraphNodes
 } from "./ssg_core_utils.js";
 
 function getGraphLink(app, node, linkId) {
@@ -56,20 +57,10 @@ function getNextSequentialGateName(app, currentNode) {
     const basePrefix = "SSG_Gate_";
     let highestIndex = 0;
 
-    const allNodes = [];
-    function collectNodes(graph) {
-        if (!graph) return;
-        const nodes = graph._nodes || graph.nodes || [];
-        for (const n of nodes) {
-            allNodes.push(n);
-            const sub = n?.subgraph || n?.inner_graph;
-            if (sub) collectNodes(sub);
-        }
-    }
-    if (app?.graph) collectNodes(app.graph);
+    const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
 
     for (const n of allNodes) {
-        if (n.type === "SSGSmartGate" && n !== currentNode) {
+        if (n && n.type === "SSGSmartGate" && n !== currentNode) {
             const val = n.properties?.channel_id;
             if (val && val.startsWith(basePrefix)) {
                 const num = parseInt(val.substring(basePrefix.length), 10);
@@ -79,6 +70,7 @@ function getNextSequentialGateName(app, currentNode) {
             }
         }
     }
+
     return `${basePrefix}${highestIndex + 1}`;
 }
 
@@ -219,7 +211,10 @@ export function setupSmartGate(nodeType, nodeData, app) {
             }
         }
 
-        if (node.graph) node.graph.setDirtyCanvas(true, true);
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
     };
 
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;
@@ -271,6 +266,9 @@ export function setupSmartGate(nodeType, nodeData, app) {
         if (injectWidget) {
             injectWidget.name = "injection_loop";
             injectWidget.value = false;
+            injectWidget.callback = () => {
+                forceNetworkUpdate(app);
+            };
         }
 
         createReadOnlyChannelWidget(node, "GATE:");
@@ -473,6 +471,28 @@ export function setupSmartGate(nodeType, nodeData, app) {
         };
 
         node.refreshSlotLayout();
+
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
+    };
+
+    const origOnRemoved = nodeType.prototype.onRemoved;
+    nodeType.prototype.onRemoved = function () {
+        if (origOnRemoved) origOnRemoved.apply(this, arguments);
+
+        const node = this;
+        const chanId = node.properties?.channel_id;
+
+        if (chanId && window.SSG_PipeRegistry) {
+            delete window.SSG_PipeRegistry[`${chanId}_TX`];
+            delete window.SSG_PipeRegistry[`${chanId}_RX`];
+        }
+
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+        }, 30);
     };
 
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;
@@ -578,16 +598,7 @@ export function setupSmartGateRelay(nodeType, nodeData, app) {
             }
             clonedNode.outputs = [];
 
-            const chanW = clonedNode.widgets?.find(w => w.name === "channel");
-            if (chanW) {
-                const activeTx = [];
-                for (const chan in window.SSG_PipeRegistry) {
-                    if (chan.endsWith("_TX")) activeTx.push(chan);
-                }
-                chanW.options = chanW.options || {};
-                chanW.options.values = activeTx.length > 0 ? ["Available", ...activeTx] : ["Unavailable"];
-                chanW.value = activeTx.length > 0 ? "Available" : "Unavailable";
-            }
+            if (clonedNode._ssgRefreshDropdown) clonedNode._ssgRefreshDropdown();
         }
         return clonedNode;
     };
@@ -638,7 +649,10 @@ export function setupSmartGateRelay(nodeType, nodeData, app) {
         node.size = [SSG_DEFAULT_WIDTH, Math.max(100, (savedTracks.length * 20) + 70)];
 
         if (node._ssgRefreshDropdown) node._ssgRefreshDropdown();
-        if (node.graph) node.graph.setDirtyCanvas(true, true);
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
     };
 
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;
@@ -674,13 +688,32 @@ export function setupSmartGateRelay(nodeType, nodeData, app) {
             }, { values: ["Unavailable"] });
         }
 
+        if (channelWidget) {
+            const origMouse = channelWidget.mouse;
+            channelWidget.mouse = function() {
+                if (typeof node._ssgRefreshDropdown === "function") {
+                    node._ssgRefreshDropdown();
+                }
+                if (origMouse) return origMouse.apply(this, arguments);
+            };
+        }
+
         node._ssgRefreshDropdown = function () {
             if (!channelWidget) return;
             const currentSelected = (channelWidget.value || "").trim();
 
             const activeTxChannels = [];
+            const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
+
+            for (const n of allNodes) {
+                if (n && n.type === "SSGSmartGate") {
+                    const val = n.properties?.channel_id;
+                    if (val) activeTxChannels.push(`${val}_TX`);
+                }
+            }
+
             for (const chan in window.SSG_PipeRegistry) {
-                if (chan.endsWith("_TX")) {
+                if (chan.endsWith("_TX") && !activeTxChannels.includes(chan)) {
                     activeTxChannels.push(chan);
                 }
             }
@@ -756,6 +789,19 @@ export function setupSmartGateRelay(nodeType, nodeData, app) {
         );
 
         node._ssgRefreshDropdown();
+
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
+    };
+
+    const origOnRemoved = nodeType.prototype.onRemoved;
+    nodeType.prototype.onRemoved = function () {
+        if (origOnRemoved) origOnRemoved.apply(this, arguments);
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+        }, 30);
     };
 
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;
@@ -814,32 +860,7 @@ export function setupSmartGateReturn(nodeType, nodeData, app) {
             }
             clonedNode.inputs = [];
 
-            const chanW = clonedNode.widgets?.find(w => w.name === "channel");
-            if (chanW) {
-                const activeRx = [];
-                const allNodes = [];
-                function collectNodes(graph) {
-                    if (!graph) return;
-                    const nodes = graph._nodes || graph.nodes || [];
-                    for (const n of nodes) {
-                        allNodes.push(n);
-                        const sub = n?.subgraph || n?.inner_graph;
-                        if (sub) collectNodes(sub);
-                    }
-                }
-                if (app?.graph) collectNodes(app.graph);
-
-                for (const n of allNodes) {
-                    if (n && n.type === "SSGSmartGate") {
-                        const val = n.properties?.channel_id;
-                        if (val) activeRx.push(`${val}_RX`);
-                    }
-                }
-
-                chanW.options = chanW.options || {};
-                chanW.options.values = activeRx.length > 0 ? ["Available", ...activeRx] : ["Unavailable"];
-                chanW.value = activeRx.length > 0 ? "Available" : "Unavailable";
-            }
+            if (clonedNode._ssgRefreshDropdown) clonedNode._ssgRefreshDropdown();
         }
         return clonedNode;
     };
@@ -898,7 +919,10 @@ export function setupSmartGateReturn(nodeType, nodeData, app) {
         node.size = [SSG_DEFAULT_WIDTH, Math.max(100, (savedTracks.length * 20) + 70)];
 
         if (node._ssgRefreshDropdown) node._ssgRefreshDropdown();
-        if (node.graph) node.graph.setDirtyCanvas(true, true);
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
     };
 
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;
@@ -936,27 +960,33 @@ export function setupSmartGateReturn(nodeType, nodeData, app) {
             }, { values: ["Unavailable"] });
         }
 
+        if (channelWidget) {
+            const origMouse = channelWidget.mouse;
+            channelWidget.mouse = function() {
+                if (typeof node._ssgRefreshDropdown === "function") {
+                    node._ssgRefreshDropdown();
+                }
+                if (origMouse) return origMouse.apply(this, arguments);
+            };
+        }
+        
         node._ssgRefreshDropdown = function () {
             if (!channelWidget) return;
             const currentSelected = (channelWidget.value || "").trim();
 
             const activeRxChannels = [];
-            const allNodes = [];
-            function collectNodes(graph) {
-                if (!graph) return;
-                const nodes = graph._nodes || graph.nodes || [];
-                for (const n of nodes) {
-                    allNodes.push(n);
-                    const sub = n?.subgraph || n?.inner_graph;
-                    if (sub) collectNodes(sub);
-                }
-            }
-            if (app?.graph) collectNodes(app.graph);
+            const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
 
             for (const n of allNodes) {
                 if (n && n.type === "SSGSmartGate") {
                     const val = n.properties?.channel_id;
                     if (val) activeRxChannels.push(`${val}_RX`);
+                }
+            }
+
+            for (const chan in window.SSG_PipeRegistry) {
+                if (chan.endsWith("_RX") && !activeRxChannels.includes(chan)) {
+                    activeRxChannels.push(chan);
                 }
             }
 
@@ -1041,6 +1071,24 @@ export function setupSmartGateReturn(nodeType, nodeData, app) {
         );
 
         node._ssgRefreshDropdown();
+
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 50);
+    };
+
+    const origOnRemoved = nodeType.prototype.onRemoved;
+    nodeType.prototype.onRemoved = function () {
+        if (origOnRemoved) origOnRemoved.apply(this, arguments);
+        const node = this;
+        const chanId = node.properties?.channel_id;
+        if (chanId && window.SSG_PipeRegistry && window.SSG_PipeRegistry[chanId]) {
+            delete window.SSG_PipeRegistry[chanId];
+        }
+        setTimeout(() => {
+            forceNetworkUpdate(app);
+        }, 30);
     };
 
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;

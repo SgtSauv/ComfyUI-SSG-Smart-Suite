@@ -1,9 +1,10 @@
 # ==========================================================================
 # SSG CUSTOM NODE ECOSYSTEM (V2 ARCHITECTURE)
 # Designation: SgtSauv & Gemini (Joint Architecture)
-# Status: 8-Core Smart Suite Engine ➔ DATA BUS, ROUTING & MEMORY CACHING
+# Status: 9-Core Smart Suite Engine ➔ DATA BUS, ROUTING, MEMORY & TRANSCEIVERS
 # ==========================================================================
 
+import json
 import torch
 
 # Persistent global registry allocation for runtime cross-node data passing
@@ -13,16 +14,13 @@ if not hasattr(torch, "_ssg_piperegistry"):
 if not hasattr(torch, "_ssg_vault_registry"):
     setattr(torch, "_ssg_vault_registry", {})
 
+if not hasattr(torch, "_ssg_module_registry"):
+    setattr(torch, "_ssg_module_registry", {})
+
 
 class SSGSmartPipe:
     DESCRIPTION = """
 Master multi-track wireless transmitter.
----
-Spawns in [ Edit Mode ] with dynamic parking dots. Connect input wires and click [ Lock ] to register an immutable channel schema to the network.
----
-🟡 Edit Mode active / open parking dots.
-🟠 Channel name collision or unregistered data type.
-🔴 Empty channel name or cyclic graph dependency.
 """
     @classmethod
     def INPUT_TYPES(cls):
@@ -53,15 +51,7 @@ Spawns in [ Edit Mode ] with dynamic parking dots. Connect input wires and click
 
 
 class SSGSmartSatellite:
-    DESCRIPTION = """
-Multi-track static wireless receiver bus.
----
-Select a registered channel and click [ Spawn Tracks ]. Wire required outputs downstream, then click [ Prune ] to collapse unused slots.
----
-🟡 Unpruned spawned tracks pending cleanup.
-🟠 Upstream schema changed (Generation Mismatch) / Channel orphan.
-🔴 Channel not found during graph flattening.
-"""
+    DESCRIPTION = """Multi-track static wireless receiver bus."""
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -94,17 +84,7 @@ Select a registered channel and click [ Spawn Tracks ]. Wire required outputs do
 
 
 class SSGSmartGate:
-    DESCRIPTION = """
-Master inline injection loop valve.
----
-Automatically registers {Channel}_TX and {Channel}_RX blueprints.
-• Injection ON: Inputs broadcast to _TX; outputs wait for processed signals returning from _RX.
-• Injection OFF (Bypass): Inputs pass straight through to outputs.
----
-🟡 Edit Mode active.
-🟠 Missing return schema or schema generation mismatch.
-🔴 Unassigned channel base.
-"""
+    DESCRIPTION = """Master inline injection loop valve."""
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -150,14 +130,7 @@ Automatically registers {Channel}_TX and {Channel}_RX blueprints.
 
 
 class SSGSmartGateRelay:
-    DESCRIPTION = """
-Dedicated consumer placed at the start of an injection subgraph loop.
----
-Target parent Gate channel and click [ Sync ] to lock to exact pin counts and data types registered by the parent Gate inputs.
----
-🟡 Pending schema synchronization.
-🟠 Target _TX channel missing or renamed.
-"""
+    DESCRIPTION = """Dedicated consumer placed at the start of an injection loop."""
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -190,14 +163,7 @@ Target parent Gate channel and click [ Sync ] to lock to exact pin counts and da
 
 
 class SSGSmartGateReturn:
-    DESCRIPTION = """
-Dedicated transmitter placed at the end of an injection subgraph loop.
----
-Target parent Gate channel and click [ Sync ] to pull the expected return schema, then wire processed loop signals back to the master Gate outputs.
----
-🟡 Unwired required return tracks.
-🟠 Missing parent Gate return blueprint.
-"""
+    DESCRIPTION = """Dedicated transmitter placed at the end of an injection loop."""
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -231,14 +197,7 @@ Target parent Gate channel and click [ Sync ] to pull the expected return schema
 
 
 class SSGSmartRouter:
-    DESCRIPTION = """
-High-speed crossbar selector for A/B model and pipeline comparisons.
----
-Toggling between Bank A and Bank B switches internal routing instantly without breaking downstream receiver links or resetting channel structures.
----
-🟡 Edit Mode active.
-🟠 Data type mismatch between paired A/B slots.
-"""
+    DESCRIPTION = """High-speed crossbar selector for A/B data comparisons."""
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -273,17 +232,7 @@ Toggling between Bank A and Bank B switches internal routing instantly without b
 
 
 class SSGSmartVault:
-    DESCRIPTION = """
-Inline RAM/VRAM cache vault & upstream execution engine severer.
----
-🔴 Flush ON, Cache OFF: Live stream updates tensor buffer in memory.
-❄ Flush OFF, Cache OFF: Freezes cache; buffer remains static.
-⚡ Cache ON: Severs upstream execution; plays back stored tensors instantly.
----
-🟡 Edit Mode active / open parking dots.
-🟠 Unpopulated cache in playback state.
-🔴 Empty vault identifier.
-"""
+    DESCRIPTION = """Inline RAM/VRAM cache vault & upstream severer."""
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -313,20 +262,16 @@ Inline RAM/VRAM cache vault & upstream execution engine severer.
     def manage_vault_cache(self, flush_switch, cache_switch, vault_manifest="", schema_generation=0, vault_id="", **kwargs):
         channel_name = kwargs.get("channel_id", vault_id or "SSG_Vault_1")
 
-        # Mutex enforcement: Cache ON strictly forces Flush OFF
         effective_flush = False if cache_switch else flush_switch
 
-        # Playback Mode: Read from runtime memory vault
         if cache_switch:
             cached_data = torch._ssg_vault_registry.get(channel_name, [None] * 24)
             if len(cached_data) < 24:
                 cached_data = list(cached_data) + [None] * (24 - len(cached_data))
             return tuple(cached_data[:24])
 
-        # Live Mode: Gather inputs
         live_inputs = [kwargs.get(f"SSG_{i}", None) for i in range(24)]
 
-        # Live Recording Buffer
         if effective_flush:
             torch._ssg_vault_registry[channel_name] = live_inputs
 
@@ -334,13 +279,7 @@ Inline RAM/VRAM cache vault & upstream execution engine severer.
 
 
 class SSGSmartTag:
-    DESCRIPTION = """
-Inline boundary namer and wildcard dynamic type-caster.
----
-Place before a transmitter to force a custom track name. Overrides upstream titles and locks ambiguous types into explicit definitions.
----
-🟠 Forced data type collision.
-"""
+    DESCRIPTION = """Inline namer and wildcard type-caster."""
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -363,6 +302,66 @@ Place before a transmitter to force a custom track name. Overrides upstream titl
         return (input,)
 
 
+class SSGSmartSocket:
+    DESCRIPTION = """Universal plug-n-play transceiver."""
+    @classmethod
+    def INPUT_TYPES(cls):
+        return {
+            "required": {
+                "bypass": ("BOOLEAN", {"default": False}),
+            },
+            "hidden": {
+                "socket_manifest": ("STRING", {"default": ""}),
+                "module_id": ("STRING", {"default": ""}),
+                "schema_generation": ("INT", {"default": 0}),
+            },
+            "optional": {
+                **{f"SSG_{i}": ("*",) for i in range(24)}
+            }
+        }
+
+    @classmethod
+    def VALIDATE_INPUTS(cls, **kwargs):
+        return True
+
+    RETURN_TYPES = tuple(["*"] * 24)
+    RETURN_NAMES = tuple([f"◦" for _ in range(24)])
+    FUNCTION = "process_socket_pipeline"
+    CATEGORY = "SSG Network Logic"
+
+    def process_socket_pipeline(self, bypass=False, socket_manifest="", module_id="", schema_generation=0, **kwargs):
+        manifest_data = {}
+        if socket_manifest:
+            try:
+                manifest_data = json.loads(socket_manifest)
+            except Exception:
+                manifest_data = {}
+
+        outputs_spec = manifest_data.get("outputs", [])
+        inputs_spec = manifest_data.get("inputs", [])
+
+        input_name_to_idx = {spec.get("name", f"SSG_{i}"): i for i, spec in enumerate(inputs_spec)}
+
+        resolved_outputs = [None] * 24
+
+        if bypass:
+            for out_idx, out_def in enumerate(outputs_spec):
+                if out_idx >= 24:
+                    break
+                fallback_key = out_def.get("fallback", None)
+                if fallback_key and fallback_key in input_name_to_idx:
+                    src_idx = input_name_to_idx[fallback_key]
+                    resolved_outputs[out_idx] = kwargs.get(f"SSG_{src_idx}", None)
+                else:
+                    resolved_outputs[out_idx] = None
+            return tuple(resolved_outputs)
+
+        for i in range(24):
+            resolved_outputs[i] = kwargs.get(f"SSG_{i}", None)
+
+        return tuple(resolved_outputs)
+
+
 NODE_CLASS_MAPPINGS = {
     "SSGSmartPipe": SSGSmartPipe,
     "SSGSmartSatellite": SSGSmartSatellite,
@@ -372,6 +371,7 @@ NODE_CLASS_MAPPINGS = {
     "SSGSmartRouter": SSGSmartRouter,
     "SSGSmartVault": SSGSmartVault,
     "SSGSmartTag": SSGSmartTag,
+    "SSGSmartSocket": SSGSmartSocket,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -383,4 +383,5 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "SSGSmartRouter": "SSG Smart Router",
     "SSGSmartVault": "SSG Smart Vault",
     "SSGSmartTag": "SSG Smart Tag",
+    "SSGSmartSocket": "SSG Smart Socket",
 }

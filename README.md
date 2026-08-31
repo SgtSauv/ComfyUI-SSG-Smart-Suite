@@ -1,19 +1,25 @@
-# SSG Smart Suite for ComfyUI (V2 Architecture)
+# SSG Smart Suite V3.0 for ComfyUI
 
-**Clean Workflows. Zero Wiring Sprawl. Instant Memory Caching.**
+[![GitHub](https://img.shields.io/badge/GitHub-Repository-181717?logo=github)](https://github.com/SgtSauv/ComfyUI-SSG-Smart-Suite)
+[![Civitai](https://img.shields.io/badge/Civitai-Model_Page-0080FF?logo=civitai)](https://civitai.com/models/2889469/comfyui-ssg-smart-suite)
+[![Civitai Red](https://img.shields.io/badge/Civitai_Red-Model_Page-E53935?logo=civitai)](https://civitai.red/models/2889469/comfyui-ssg-smart-suite)
 
-An 8-core custom node ecosystem engineered to eliminate canvas wire clutter, provide reliable multi-lane wireless distribution, enable instant A/B testing, and deliver true in-memory RAM/VRAM tensor caching that severs upstream execution.
+> *"We build tools that fix the engine; we do not repaint the chassis."*[cite: 2, 5]
 
-> *"We build tools that fix the engine; we do not repaint the chassis."*
+**SSG Smart Suite** is a native, high-performance signal-routing, workflow-organization, and virtual-memory architecture for ComfyUI[cite: 5]. It eliminates noodle sprawl across complex workflows and nested subgraphs without breaking execution performance, monkey-patching DOM elements, or adding overhead[cite: 4, 5].
 
 ---
 
-## ⚡ Key Architecture Features
+## 📸 Overview & Command Deck
 
-* **Zero-Latency Prompt Flattening:** Wireless receivers (Satellites, Relays, Returns) resolve directly to upstream physical origins during graph-to-prompt compilation. To ComfyUI's backend execution engine, all connections execute with the zero-overhead latency of native direct wires.
-* **Auto-Naming & Type Sniffing:** Connecting any wire to an SSG broadcaster automatically resolves slot labels and detects data types (MODEL, CLIP, VAE, LATENT, IMAGE, CONDITIONING, etc.) recursively across reroutes and nested subgraphs.
-* **Passive Warning Telemetry:** Real-time chassis outlines provide visual feedback on synchronization and routing state without UI popup interruptions or unwanted canvas resets.
-* **Compact Mini-Bar HUD:** Collapsing nodes into mini-bar form automatically streamlines header titles and enables a high-contrast Alienware Blue status tooltip displaying live channel IDs, track counts, and operating modes.
+![SSG Smart Suite Hero Banner](assets/screenshots/ssg_smart_suite_hero.png)
+
+### What Makes SSG Smart Suite Different?
+* **Native ComfyUI Aesthetic:** Pure LiteGraph engineering[cite: 5]. Standard node bounds (`220px`), native typography, clean slot behaviors, and zero DOM pop-up conflicts[cite: 2, 5].
+* **Seamless Subgraph Compatibility:** Route multi-lane buses directly into and out of nested subgraphs with zero connection breaks[cite: 3, 5].
+* **Zero-Latency graphToPrompt Flattening:** Wireless connections execute as physical native wires in the PyTorch execution backend[cite: 5].
+* **SSG Smart HUD (`Alt + S`):** A floating mission-control directory for monitoring live channels, switching states, focusing nodes, and triggering canvas-wide glow beacons[cite: 5].
+* **Dynamic Smart Socket:** Universal hardware transceiver that morphs its input/output pins dynamically to host zero-wire companion appliances (like Face Detailers, LoRA Decks, and Processors)[cite: 4, 5].
 
 <img width="2560" height="1380" alt="Screenshot 2026-08-25 151101" src="https://github.com/user-attachments/assets/da044147-5a44-4ec6-a21a-d73521e5932b" />
 
@@ -21,107 +27,115 @@ An 8-core custom node ecosystem engineered to eliminate canvas wire clutter, pro
 
 ---
 
-## 📦 Installation
+## ⚡ Installation
 
-### Method 1: Git Clone (Manual)
+### Option 1: ComfyUI-Manager (Recommended)
+1. Open **ComfyUI-Manager** inside ComfyUI.
+2. Search for `SSG Smart Suite`[cite: 1].
+3. Click **Install** and restart ComfyUI.
 
-1. Open a terminal / command prompt inside your ComfyUI custom nodes directory:
-cd ComfyUI/custom_nodes
+### Option 2: Git Clone
+Navigate to your ComfyUI custom nodes directory and run:
 
-2. Clone this repository:
+cd custom_nodes
 git clone https://github.com/SgtSauv/ComfyUI-SSG-Smart-Suite.git
 
-3. Restart ComfyUI.
+Restart ComfyUI.
 
 ---
 
-## 🛠 Node Roster & Core Functions
+## 🎮 SSG Smart HUD (Command Deck)
+
+![SSG Smart HUD Command Deck](assets/screenshots/ssg_smart_hud.png)
+
+Press **`Alt + S`** (or click the floating **SSG HUD** button) anywhere on canvas to open the Command Deck[cite: 5]:
+
+* 🔍 **Real-Time Filter:** Instant search across all active channels, tracks, and paired module names[cite: 5].
+* ⚡ **Live State Toggles:** Switch Router banks (`Bank A` / `Bank B`), toggle Gate injection loops (`INJECT` / `BYPASS`), cycle Vault memory states (`PLAYBACK` / `BUFFER` / `FROZEN`), or bypass Sockets straight from the HUD[cite: 5].
+* 📌 **Canvas Glow Beacon:** Click the push-pin on any row to fire an Alienware Blue high-intensity outline across all transmitters, receivers, and paired companion modules associated with that channel[cite: 2, 3, 5].
+* 🎯 **Double-Click Auto-Focus:** Double-click any channel row to instantly center your canvas on that node, even if it is tucked deep inside a nested subgraph[cite: 2, 5].
+* 🖱 **Alienware Context Menu:** Right-click any row for direct sub-targeting (`Focus Gate`, `Focus Relay`, `Focus Return`), highlight toggles, or remote schema locking/unlocking[cite: 5].
+
+---
+
+## 🧩 The Core Node Roster
 
 ### 1. SSG Smart Pipe (Master Broadcaster)
-*The Universal Multi-Track Transmitter*
+![SSG Smart Pipe](assets/screenshots/node_pipe.png)
+* **Role:** Bundles up to 24 arbitrary signal lanes (MODEL, CLIP, VAE, LATENT, Prompts, etc.) into a clean, collision-free wireless channel[cite: 5].
+* **How it works:** Spawns with wildcard parking dots (`"◦"`)[cite: 5]. Attach your upstream wires, and the engine automatically sniffs data types and names[cite: 2, 5]. Click `[ Lock Schema ]` to serialize the manifest and broadcast it across the graph[cite: 5].
 
-Bundles up to 24 arbitrary signal lanes (models, prompts, masks, conditionings) into a single named wireless broadcast channel.
+### 2. SSG Smart Satellite (Multi-Track Bus Consumer)
+![SSG Smart Satellite](assets/screenshots/node_satellite.png)
+* **Role:** A lightweight consumer bus that receives multi-track signals anywhere in your workflow or inside subgraphs[cite: 5].
+* **How it works:** Pick your channel from the dropdown and click `[ Spawn Tracks ]`[cite: 5]. Connect the outputs you need downstream, then click `[ Prune Unused ]` to collapse unlinked slots into a compact footprint[cite: 5].
 
-**How to Use:**
-1. Drop a Smart Pipe onto your canvas. It spawns in [ Edit Mode ] with dynamic parking dot pins (◦).
-2. Connect your upstream signals. Pins expand dynamically, auto-naming and typing themselves.
-3. Click [ Lock Schema ] to prune trailing empty pins, freeze the layout, and register the channel to the network.
+### 3. SSG Smart Router (A/B Crossbar Switcher)
+![SSG Smart Router](assets/screenshots/node_router.png)
+* **Role:** High-speed A/B crossbar switcher for comparing models, samplers, conditioning, or full pipeline branches[cite: 5].
+* **How it works:** Connect pairs (`A0`/`B0` through `A11`/`B11`)[cite: 5]. Toggling between Bank A and Bank B wirelessly switches all downstream Satellites instantly without breaking a single wire[cite: 5].
 
----
+### 4. SSG Smart Gate Trio (Subgraph Injection Loop)
+![SSG Smart Gate Trio](assets/screenshots/node_gate_trio.png)
+* **Master Gate:** Inline valve placed in your main generation line[cite: 5]. Manages `{Channel}_TX` and `{Channel}_RX` streams[cite: 5].
+* **Gate Relay:** Placed at the entrance of an injection subgraph loop to receive live `{Channel}_TX` data[cite: 5].
+* **Gate Return:** Placed at the end of the subgraph loop to broadcast processed `{Channel}_RX` signals back to the main pipeline[cite: 5].
+* **Bypass / Inject:** When injection is OFF, signals pass straight through the Master Gate internally with zero compute overhead[cite: 5]. When toggled ON, signals detour through the subgraph loop seamlessly[cite: 5].
 
-### 2. SSG Smart Satellite (Wireless Receiver Bus)
-*The Clean Consumer*
+### 5. SSG Smart Vault (Inline RAM/VRAM Storage & Engine Severer)
+![SSG Smart Vault](assets/screenshots/node_vault.png)
+* **Role:** An inline tensor buffer and execution engine severer for prompt iteration, upscaling, and workflow caching[cite: 5].
+* **Tri-State Mutex Engine:**
+  * ⚡ **`[ PLAYBACK ]` (Severed):** Upstream dependencies are severed during prompt compilation[cite: 1, 5]. Outputs cached tensors directly from RAM/VRAM with zero upstream execution time[cite: 1, 5].
+  * 🔴 **`[ BUFFER ]` (Live Recording):** Passes signals through live while continuously caching in-memory buffers[cite: 5].
+  * ❄ **`[ FROZEN ]` (Locked Buffer):** Passes signals live while freezing the stored cache against further changes[cite: 5].
 
-Wireless receiver bus that taps into any active Pipe, Gate, Router, or Vault broadcast channel.
+### 6. SSG Smart Socket (Universal Transceiver & Morpher)
+![SSG Smart Socket](assets/screenshots/node_socket.png)
+* **Role:** A universal in-line transceiver that dynamically morphs its physical inputs and outputs to host zero-wire companion modules (from the SSG Smart Modules pack)[cite: 3, 5].
+* **How it works:** Select an appliance module (e.g. Face Detailer, LoRA Deck)[cite: 4, 5]. The socket auto-morphs its pins to match the module's schema[cite: 3, 5]. If bypassed, the socket cleanly bridges original inputs directly to outputs with zero interruption[cite: 5].
 
-**How to Use:**
-1. Select an active channel from the channel dropdown.
-2. Click [ Spawn Tracks ] to populate all registered output pins.
-3. Connect the desired signals to your downstream workflow.
-4. Click [ Prune Unused ] to collapse unwired pins into a compact, static footprint.
-
----
-
-### 3. SSG Smart Gate Trio (Subgraph Injection Loop)
-*Inline Processing & Refinement Loops*
-
-Route a main pipeline through a modular subgraph, detailer loop, or refinement pass without back-and-forth canvas sprawl.
-
-* **SSG Smart Gate (Master Valve):**
-  * **Injection OFF (Bypass):** Signals pass directly from inputs to outputs with zero loop overhead.
-  * **Injection ON:** Routes signals out through {Channel}_TX, awaits refined results from {Channel}_RX, and outputs the processed signals downstream.
-* **SSG Smart Gate Relay (Loop Start):** Placed at the entry point of your loop. Select {Channel}_TX and click [ Sync Tracks ] to receive incoming signals.
-* **SSG Smart Gate Return (Loop End):** Placed at the exit point of your loop. Select {Channel}_RX, click [ Sync Tracks ], and connect finished loop outputs to feed them back to the master Gate.
-
----
-
-### 4. SSG Smart Router (Instant A/B Crossbar)
-*High-Speed Model & Pipeline Switcher*
-
-Connect two complete sets of models, prompts, or latent stacks (Bank A and Bank B) into a single switcher node.
-
-**How to Use:**
-1. Wire your primary setup into the A input slots and your alternative setup into the B input slots.
-2. Click [ Lock Schema ] to publish the channel.
-3. Bind downstream Satellites to the Router channel.
-4. Toggle the router_switch between Bank A and Bank B to swap upstream feeds across your entire workflow without reconnecting wires or breaking downstream links.
+### 7. SSG Smart Tag (Naming Boundary & Type Override)
+![SSG Smart Tag](assets/screenshots/node_tag.png)
+* **Role:** A single-slot passthrough node that acts as a hard naming boundary and explicit type-caster for the upstream recursive drill engine[cite: 5].
 
 ---
 
-### 5. SSG Smart Vault (In-Memory Cache & Engine Severer)
-*Freeze, Cache, & Skip Upstream Computation*
+## 🔍 Recursive Autonaming Drill Engine
 
-Saves tensors directly into host RAM/VRAM memory buffers so you don't have to re-compute heavy upstream pipelines during prompt iteration, inpainting, or detail passes.
+When you connect a wire to any dynamic SSG slot, `findTrueUpstreamAnchor` crawls upstream across reroutes, subgraphs, and bridges to name your tracks automatically in priority order[cite: 2, 5]:
 
-**Tri-State Caching Engine:**
-* 🔴 **Live Recording (Flush ON, Cache OFF):** Passes signals live while continuously updating in-memory tensor buffers on every run.
-* ❄ **Frozen Buffer (Flush OFF, Cache OFF):** Holds stored data statically in memory while continuing to pass live upstream signals through.
-* ⚡ **Instant Playback (Cache ON):** **Completely severs upstream execution dependencies.** ComfyUI skips heavy upstream loaders and samplers entirely, outputting cached tensors directly from memory.
-
----
-
-### 6. SSG Smart Tag (Boundary Namer & Type Normalizer)
-*Custom Labels & Explicit Type Override*
-
-Inline 1-in / 1-out helper node placed upstream of transmitters or routes.
-
-**How to Use:**
-* Enter a custom label into tag_name to override default node titles across downstream auto-namers.
-* Set type_override to lock an ambiguous wildcard (*) to an explicit type definition (e.g., MODEL, CLIP, VAE, LATENT, IMAGE, CONDITIONING).
+1. 🏷 **SSG Smart Tag:** Explicit user tag name and type override[cite: 2, 5].
+2. ✏ **Custom Renamed Node:** If you rename *any* upstream node (e.g. renaming `Load Checkpoint` to `SDXL Base`), the engine captures that custom title as the track name[cite: 2].
+3. 📦 **Known Multi-Output Maps:** Known outputs (like `CheckpointLoaderSimple` ➔ `MODEL`, `CLIP`, `VAE`) resolve cleanly[cite: 2, 5].
+4. 🌉 **Subgraph Input Proxies:** Traverses boundary pins to find the true origin outside the subgraph[cite: 2, 5].
+5. ⚙ **Fallback Type:** Uses the slot label or native ComfyUI data type (`LATENT`, `IMAGE`, `CONDITIONING`, etc.)[cite: 2, 5].
 
 ---
 
-## 🚦 Telemetry & Diagnostic Outline Guide
+## 🚦 Visual Diagnostics & Telemetry
 
-| Border Color | Diagnostic Status | Meaning / Trigger Criteria | Corrective Action |
-| :--- | :--- | :--- | :--- |
-| **Default Chassis** | **Tier 0: Nominal** | Locked, synchronized, and ready for execution. | None required. |
-| **Yellow** (#ffcc00) | **Tier 1: Advisory** | Node in Edit Mode with open parking dots, or Satellite pending pruning. | Click [ Lock Schema ] on transmitters or [ Prune Unused ] on Satellites. |
-| **Orange** (#ff7700) | **Tier 2: Desync** | Broken locked wire, data type collision, or upstream channel schema updated. | Reconnect broken wires or click [ Sync Tracks ] on Relays/Returns. |
-| **Red** (#ff3333) | **Tier 3: Fault** | Missing channel identifier or target channel offline. | Select a valid broadcast channel from the dropdown. |
+SSG Smart Suite features real-time diagnostic perimeter outlines so you never have to guess why a connection isn't firing[cite: 2, 5]:
+
+| Diagnostic Tier | Visual Border | What It Means |
+| :--- | :--- | :--- |
+| **Tier 0: Nominal** | **Clean / No Border** | Fully locked, synchronized, and ready for execution[cite: 2, 5]. |
+| **Tier 1: Advisory** | **Yellow (`#ffcc00`)** | Node is currently in `[ Edit Mode ]` or waiting for schema synchronization[cite: 2, 5]. |
+| **Tier 2: Desync** | **Orange (`#ff7700`)** | Upstream broadcaster changed its schema generation, or a wire type mismatch was detected[cite: 2, 5]. |
+| **Tier 3: Fault** | **Red (`#ff3333`)** | Critical error: Channel unavailable, severed link, or missing module dependency[cite: 2, 5]. |
 
 ---
 
-## 📄 License
+## 📚 Documentation & Specifications
 
-This project is licensed under the [MIT License](LICENSE).
+For the exhaustive engineering manual covering client/server PyTorch hooks[cite: 1, 2], schema generation tracking[cite: 5], and runtime prompt compilation[cite: 3, 5], see:
+👉 **[SSG Smart Suite V3.0 Architecture Manual](docs/SSG Smart Suite V3.0 Manual.docx)**
+
+---
+
+## 🤝 Community & Links
+* **GitHub Issues:** [Report a Bug / Feature Request](https://github.com/SgtSauv/ComfyUI-SSG-Smart-Suite/issues)
+* **Civitai:** [SSG Smart Suite on Civitai](https://civitai.com/models/2889469/comfyui-ssg-smart-suite)
+* **Civitai Red:** [SSG Smart Suite on Civitai Red](https://civitai.red/models/2889469/comfyui-ssg-smart-suite)
+
+Created by **SgtSauv**[cite: 2]
