@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "comfyui-ssg-smart-suite"
+version = "3.0.0"
+description = "Wireless Network, RAM caching, Injection Loops, A/B Switching, and Module Plug-Ins"
+readme = "README.md"
+license = { text = "MIT" }
+dependencies = []
+
+[project.urls]
+Repository = "https://github.com/SgtSauv/ComfyUI-SSG-Smart-Suite"
+Documentation = "https://github.com/SgtSauv/ComfyUI-SSG-Smart-Suite/wiki"
+"Bug Tracker" = "https://github.com/SgtSauv/ComfyUI-SSG-Smart-Suite/issues"
+
+[tool.comfy]
+PublisherId = "sgtsauv"
+publisher_id = "sgtsauv"
+DisplayName = "ComfyUI-SSG-Smart-Suite"
+display_name = "ComfyUI-SSG-Smart-Suite"
+icon = ""
+includes = []
