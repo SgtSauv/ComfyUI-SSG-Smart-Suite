@@ -1,5 +1,5 @@
 // ==========================================================================
-// SSG CUSTOM NODE ECOSYSTEM (V2 ARCHITECTURE)
+// SSG CUSTOM NODE ECOSYSTEM (V4 ARCHITECTURE)
 // Module: Extension Entry Point, Prototype Hooks & graphToPrompt Flattener
 // File: /web/js/ssg_extension_entry.js
 // ==========================================================================
@@ -12,7 +12,7 @@ import { setupSmartGate, setupSmartGateRelay, setupSmartGateReturn } from "./ssg
 import { setupSmartRouter } from "./ssg_smart_router.js";
 import { setupSmartVault } from "./ssg_smart_vault.js";
 import { setupSmartSocket } from "./ssg_smart_socket.js";
-import { forceNetworkUpdate } from "./ssg_core_utils.js";
+import { forceNetworkUpdate, isChannelBypassed } from "./ssg_core_utils.js";
 import { initSmartHUD, updateHUDState } from "./ssg_smart_hud.js";
 
 const NODE_CONSTRUCTORS = {
@@ -31,7 +31,6 @@ function resolvePromptLinkOrigin(output, matchingNodeEntry, inputKey) {
     if (!matchingNodeEntry || !matchingNodeEntry.inputs) return null;
 
     const upstreamLink = matchingNodeEntry.inputs[inputKey];
-
     if (upstreamLink === undefined) return null;
 
     if (!Array.isArray(upstreamLink)) {
@@ -40,7 +39,6 @@ function resolvePromptLinkOrigin(output, matchingNodeEntry, inputKey) {
 
     const originNodeId = String(upstreamLink[0]);
     const originSlot = Number(upstreamLink[1]);
-
     const originEntry = output[originNodeId];
 
     if (originEntry && originEntry.inputs) {
@@ -49,7 +47,6 @@ function resolvePromptLinkOrigin(output, matchingNodeEntry, inputKey) {
         if (classLower.includes("subgraphinput") || classLower.includes("graphinput")) {
             for (const inpKey in originEntry.inputs) {
                 const bridgeLink = originEntry.inputs[inpKey];
-
                 if (Array.isArray(bridgeLink)) {
                     return resolvePromptLinkOrigin(
                         output,
@@ -101,57 +98,56 @@ function extractChannelName(candidateNode, graphNode) {
 window.SSG_forceNetworkUpdate = forceNetworkUpdate;
 
 app.registerExtension({
-    name: "SSG.SmartSuite.V2",
+    name: "SSG.SmartSuite.V4",
 
     setup(appInstance) {
-        initSmartHUD(appInstance || app);
+        const activeApp = appInstance || app;
+        initSmartHUD(activeApp);
 
-        const origOnNodeAdded = appInstance.graph.onNodeAdded;
-
-        appInstance.graph.onNodeAdded = function(node) {
+        const origOnNodeAdded = activeApp.graph.onNodeAdded;
+        activeApp.graph.onNodeAdded = function(node) {
             if (origOnNodeAdded) origOnNodeAdded.apply(this, arguments);
 
-            if (node.type && node.type.startsWith("SSGSmart")) {
+            if (node.type && node.type.startsWith("SSG")) {
                 setTimeout(() => {
                     if (typeof window.SSG_forceNetworkUpdate === "function") {
-                        window.SSG_forceNetworkUpdate(appInstance);
+                        window.SSG_forceNetworkUpdate(activeApp);
                     }
-                    updateHUDState(appInstance);
+                    updateHUDState(activeApp);
                 }, 100);
             }
         };
 
-        const origOnNodeRemoved = appInstance.graph.onNodeRemoved;
-
-        appInstance.graph.onNodeRemoved = function(node) {
+        const origOnNodeRemoved = activeApp.graph.onNodeRemoved;
+        activeApp.graph.onNodeRemoved = function(node) {
             if (origOnNodeRemoved) origOnNodeRemoved.apply(this, arguments);
 
-            if (node.type && node.type.startsWith("SSGSmart")) {
+            if (node.type && node.type.startsWith("SSG")) {
                 setTimeout(() => {
                     if (typeof window.SSG_forceNetworkUpdate === "function") {
-                        window.SSG_forceNetworkUpdate(appInstance);
+                        window.SSG_forceNetworkUpdate(activeApp);
                     }
-                    updateHUDState(appInstance);
+                    updateHUDState(activeApp);
                 }, 100);
             }
         };
 
-        const origLoadGraphData = appInstance.loadGraphData;
+        const origLoadGraphData = activeApp.loadGraphData;
         if (origLoadGraphData) {
-            appInstance.loadGraphData = async function() {
+            activeApp.loadGraphData = async function() {
                 const res = await origLoadGraphData.apply(this, arguments);
                 setTimeout(() => {
                     if (typeof window.SSG_forceNetworkUpdate === "function") {
-                        window.SSG_forceNetworkUpdate(appInstance);
+                        window.SSG_forceNetworkUpdate(activeApp);
                     }
-                    updateHUDState(appInstance);
+                    updateHUDState(activeApp);
                 }, 150);
                 return res;
             };
         }
     },
 
-    afterConfigureGraph(missingNodeTypes) {
+    afterConfigureGraph() {
         setTimeout(() => {
             if (typeof window.SSG_forceNetworkUpdate === "function") {
                 window.SSG_forceNetworkUpdate(app);
@@ -162,7 +158,6 @@ app.registerExtension({
 
     async beforeRegisterNodeDef(nodeType, nodeData, appInstance) {
         const setupFn = NODE_CONSTRUCTORS[nodeData.name];
-
         if (setupFn) {
             setupFn(nodeType, nodeData, appInstance || app);
         }
@@ -177,18 +172,15 @@ const original_graphToPrompt = app.graphToPrompt;
 
 app.graphToPrompt = async function() {
     const res = await original_graphToPrompt.apply(this, arguments);
-
     if (!res || !res.output) return res;
 
     const output = res.output;
-
     const allGraphNodes = [];
     const executionIdByNode = new Map();
     const graphNodeByExecutionId = new Map();
 
     function collectNodes(targetGraph, parentExecutionPath = []) {
         if (!targetGraph) return;
-
         const nodes = targetGraph._nodes || targetGraph.nodes || [];
 
         for (const n of nodes) {
@@ -199,7 +191,6 @@ app.graphToPrompt = async function() {
             const executionId = executionPath.join(":");
 
             allGraphNodes.push(n);
-
             executionIdByNode.set(n, executionId);
             graphNodeByExecutionId.set(executionId, n);
             graphNodeByExecutionId.set(localId, n);
@@ -215,13 +206,170 @@ app.graphToPrompt = async function() {
         collectNodes(app.graph);
     }
 
+    // ----------------------------------------------------------------------
+    // PRE-PASS: TOPOLOGICAL LOOP QUARANTINE & COMPANION PURGE
+    // ----------------------------------------------------------------------
+    const quarantinedNodeIds = new Set();
+    const quarantinedSocketChannels = new Set();
+    const bypassedGateChannels = new Set();
+
+    for (const graphNode of allGraphNodes) {
+        if (graphNode && graphNode.type === "SSGSmartGate") {
+            const nodeId = executionIdByNode.get(graphNode) || String(graphNode.id);
+            const promptNode = output[nodeId];
+
+            let isInjecting = false;
+            if (promptNode && promptNode.inputs && promptNode.inputs.injection_loop !== undefined) {
+                isInjecting = !!promptNode.inputs.injection_loop;
+            } else if (graphNode.properties && graphNode.properties.injection_loop !== undefined) {
+                isInjecting = !!graphNode.properties.injection_loop;
+            } else {
+                const injectWidget = graphNode.widgets?.find(w => w.name === "injection_loop");
+                isInjecting = !!injectWidget?.value;
+            }
+
+            if (!isInjecting) {
+                const gateChan = extractChannelName(promptNode, graphNode);
+                if (gateChan) {
+                    bypassedGateChannels.add(gateChan);
+                }
+            }
+        }
+    }
+
+    if (bypassedGateChannels.size > 0) {
+        const bypassedRelayNodes = [];
+        const bypassedReturnNodes = [];
+
+        for (const graphNode of allGraphNodes) {
+            if (!graphNode) continue;
+            const nodeId = executionIdByNode.get(graphNode) || String(graphNode.id);
+
+            if (graphNode.type === "SSGSmartGateRelay") {
+                const chan = extractChannelName(output[nodeId], graphNode);
+                const baseChan = chan.replace(/_TX$/, "");
+                if (bypassedGateChannels.has(baseChan) || bypassedGateChannels.has(chan)) {
+                    bypassedRelayNodes.push({ graphNode, executionId: nodeId });
+                    quarantinedNodeIds.add(nodeId);
+                    quarantinedNodeIds.add(String(graphNode.id));
+                }
+            } else if (graphNode.type === "SSGSmartGateReturn") {
+                const chan = extractChannelName(output[nodeId], graphNode);
+                const baseChan = chan.replace(/_RX$/, "");
+                if (bypassedGateChannels.has(baseChan) || bypassedGateChannels.has(chan)) {
+                    bypassedReturnNodes.push({ graphNode, executionId: nodeId });
+                    quarantinedNodeIds.add(nodeId);
+                    quarantinedNodeIds.add(String(graphNode.id));
+                }
+            }
+        }
+
+        // Downstream contagion sweep from bypassed Relays (all SSG* nodes)
+        function walkDownstreamContagion(startGraphNode) {
+            if (!startGraphNode || !startGraphNode.outputs) return;
+            for (const outSlot of startGraphNode.outputs) {
+                if (!outSlot.links || outSlot.links.length === 0) continue;
+                for (const linkId of outSlot.links) {
+                    for (const candNode of allGraphNodes) {
+                        if (!candNode || !candNode.inputs) continue;
+                        for (const inSlot of candNode.inputs) {
+                            if (inSlot.link === linkId) {
+                                const candType = String(candNode.type || candNode.comfyClass || "");
+                                const candExecId = executionIdByNode.get(candNode) || String(candNode.id);
+
+                                if (candType.startsWith("SSG") && candType !== "SSGSmartGate") {
+                                    if (candType === "SSGSmartSocket") {
+                                        const sockChan = candNode.properties?.channel_id;
+                                        if (sockChan) quarantinedSocketChannels.add(sockChan);
+                                    }
+
+                                    if (!quarantinedNodeIds.has(candExecId)) {
+                                        quarantinedNodeIds.add(candExecId);
+                                        quarantinedNodeIds.add(String(candNode.id));
+                                        walkDownstreamContagion(candNode);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Upstream contagion sweep from bypassed Returns (all SSG* nodes)
+        function walkUpstreamContagion(startGraphNode) {
+            if (!startGraphNode || !startGraphNode.inputs) return;
+            for (const inSlot of startGraphNode.inputs) {
+                if (inSlot.link === null || inSlot.link === undefined) continue;
+                const linkId = inSlot.link;
+                for (const candNode of allGraphNodes) {
+                    if (!candNode || !candNode.outputs) continue;
+                    for (const outSlot of candNode.outputs) {
+                        if (outSlot.links && outSlot.links.includes(linkId)) {
+                            const candType = String(candNode.type || candNode.comfyClass || "");
+                            const candExecId = executionIdByNode.get(candNode) || String(candNode.id);
+
+                            if (candType.startsWith("SSG") && candType !== "SSGSmartGate") {
+                                if (candType === "SSGSmartSocket") {
+                                    const sockChan = candNode.properties?.channel_id;
+                                    if (sockChan) quarantinedSocketChannels.add(sockChan);
+                                }
+
+                                if (!quarantinedNodeIds.has(candExecId)) {
+                                    quarantinedNodeIds.add(candExecId);
+                                    quarantinedNodeIds.add(String(candNode.id));
+                                    walkUpstreamContagion(candNode);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        for (const relay of bypassedRelayNodes) {
+            walkDownstreamContagion(relay.graphNode);
+        }
+
+        for (const ret of bypassedReturnNodes) {
+            walkUpstreamContagion(ret.graphNode);
+        }
+
+        // Catch companion module decks bound to any quarantined socket
+        for (const candidateId in output) {
+            const candidate = output[candidateId];
+            if (!candidate) continue;
+
+            const candGraphNode = graphNodeByExecutionId.get(candidateId);
+            const targetSock = candGraphNode?.properties?.target_socket || candidate.inputs?.target_socket;
+
+            if (targetSock && quarantinedSocketChannels.has(targetSock)) {
+                quarantinedNodeIds.add(candidateId);
+                if (candGraphNode) quarantinedNodeIds.add(String(candGraphNode.id));
+            }
+        }
+
+        // Instant pre-emptive purge from output dictionary before link flattening starts
+        for (const qId of quarantinedNodeIds) {
+            if (output[qId]) {
+                delete output[qId];
+            }
+        }
+    }
+
+    // ----------------------------------------------------------------------
+    // PRIMARY FLATTENING LOOP
+    // ----------------------------------------------------------------------
     for (const graphNode of allGraphNodes) {
         if (!graphNode) continue;
 
-        const nodeId =
-            executionIdByNode.get(graphNode) || String(graphNode.id);
+        const nodeId = executionIdByNode.get(graphNode) || String(graphNode.id);
+        if (quarantinedNodeIds.has(nodeId) || quarantinedNodeIds.has(String(graphNode.id))) {
+            continue;
+        }
 
         const promptNode = output[nodeId];
+        if (!promptNode) continue;
 
         // ------------------------------------------------------------------
         // 1. VAULT (Cache Severing)
@@ -232,20 +380,14 @@ app.graphToPrompt = async function() {
             if (promptNode.inputs && promptNode.inputs.cache_switch !== undefined) {
                 isPlayback = !!promptNode.inputs.cache_switch;
             } else {
-                const cacheWidget = graphNode.widgets?.find(
-                    w => w.name === "cache_switch"
-                );
+                const cacheWidget = graphNode.widgets?.find(w => w.name === "cache_switch");
                 isPlayback = !!cacheWidget?.value;
             }
 
             if (isPlayback) {
                 for (let i = 0; i < 24; i++) {
                     const inputKey = `SSG_${i}`;
-
-                    if (
-                        promptNode.inputs &&
-                        promptNode.inputs[inputKey] !== undefined
-                    ) {
+                    if (promptNode.inputs && promptNode.inputs[inputKey] !== undefined) {
                         delete promptNode.inputs[inputKey];
                     }
                 }
@@ -255,14 +397,8 @@ app.graphToPrompt = async function() {
         // ------------------------------------------------------------------
         // 2. SATELLITE / GATE RELAY (Wireless Consumers)
         // ------------------------------------------------------------------
-        if (
-            graphNode.type === "SSGSmartSatellite" ||
-            graphNode.type === "SSGSmartGateRelay"
-        ) {
-            const channelWidget = graphNode.widgets?.find(
-                w => w.name === "channel"
-            );
-
+        if (graphNode.type === "SSGSmartSatellite" || graphNode.type === "SSGSmartGateRelay") {
+            const channelWidget = graphNode.widgets?.find(w => w.name === "channel");
             let targetChannel = channelWidget?.value || graphNode.properties?.bound_channel;
 
             if (!targetChannel && promptNode?.inputs) {
@@ -292,13 +428,8 @@ app.graphToPrompt = async function() {
                     candidate.class_type === "SSGSmartGate" ||
                     candidate.class_type === "SSGSmartRouter"
                 ) {
-                    const matchingGraphNode =
-                        graphNodeByExecutionId.get(candidateId);
-
-                    const chanName = extractChannelName(
-                        candidate,
-                        matchingGraphNode
-                    );
+                    const matchingGraphNode = graphNodeByExecutionId.get(candidateId);
+                    const chanName = extractChannelName(candidate, matchingGraphNode);
 
                     if (
                         chanName === cleanTarget ||
@@ -360,14 +491,8 @@ app.graphToPrompt = async function() {
                             }
                         }
 
-                        if (
-                            masterTrackIdx === null &&
-                            outputSlot?.name &&
-                            masterEntry.inputs
-                        ) {
-                            const masterGraphNode =
-                                graphNodeByExecutionId.get(masterId);
-
+                        if (masterTrackIdx === null && outputSlot?.name && masterEntry.inputs) {
+                            const masterGraphNode = graphNodeByExecutionId.get(masterId);
                             const masterManifestStr =
                                 masterGraphNode?.properties?.pipe_manifest ||
                                 masterGraphNode?.properties?.router_manifest ||
@@ -375,17 +500,9 @@ app.graphToPrompt = async function() {
 
                             if (masterManifestStr) {
                                 try {
-                                    const masterTracks =
-                                        JSON.parse(masterManifestStr);
-
-                                    const matched = masterTracks.find(
-                                        t => t.name === outputSlot.name
-                                    );
-
-                                    if (
-                                        matched &&
-                                        matched.index !== undefined
-                                    ) {
+                                    const masterTracks = JSON.parse(masterManifestStr);
+                                    const matched = masterTracks.find(t => t.name === outputSlot.name);
+                                    if (matched && matched.index !== undefined) {
                                         masterTrackIdx = matched.index;
                                     }
                                 } catch (e) {}
@@ -399,33 +516,26 @@ app.graphToPrompt = async function() {
                         let pipeInputKey = `SSG_${masterTrackIdx}`;
 
                         if (masterEntry.class_type === "SSGSmartRouter") {
-                            let activeBank = "Bank A";
+                            let isBankB = false;
 
                             if (masterEntry.inputs && masterEntry.inputs.router_switch !== undefined) {
-                                activeBank = masterEntry.inputs.router_switch;
+                                const swVal = masterEntry.inputs.router_switch;
+                                isBankB = (swVal === true || swVal === "Bank B" || swVal === "B");
                             } else {
-                                const masterGraphNode =
-                                    graphNodeByExecutionId.get(masterId);
-
-                                activeBank =
-                                    masterGraphNode?.widgets?.find(
-                                        w => w.name === "router_switch"
-                                    )?.value || "Bank A";
+                                const masterGraphNode = graphNodeByExecutionId.get(masterId);
+                                const swW = masterGraphNode?.widgets?.find(w => w.name === "router_switch");
+                                const swVal = swW?.value;
+                                isBankB = (swVal === true || swVal === "Bank B" || swVal === "B");
                             }
 
-                            const suffix =
-                                (activeBank === "Bank A" || activeBank === "A") ? "_A" : "_B";
-
-                            pipeInputKey =
-                                `SSG_${masterTrackIdx}${suffix}`;
+                            pipeInputKey = isBankB ? `SSG_${masterTrackIdx}_B` : `SSG_${masterTrackIdx}_A`;
                         }
 
-                        const resolvedOrigin =
-                            resolvePromptLinkOrigin(
-                                output,
-                                masterEntry,
-                                pipeInputKey
-                            );
+                        const resolvedOrigin = resolvePromptLinkOrigin(
+                            output,
+                            masterEntry,
+                            pipeInputKey
+                        );
 
                         if (resolvedOrigin !== null) {
                             dsNode.inputs[inputKey] = resolvedOrigin;
@@ -436,31 +546,24 @@ app.graphToPrompt = async function() {
         }
 
         // ------------------------------------------------------------------
-        // 3. MASTER GATE (Bypass & RX Return Splice)
+        // 3. MASTER GATE (Loop Routing & Bypass Forwarding)
         // ------------------------------------------------------------------
         if (graphNode.type === "SSGSmartGate" && promptNode) {
             let isInjecting = false;
 
-            if (promptNode.inputs) {
-                if (promptNode.inputs.injection_loop !== undefined) {
-                    isInjecting = !!promptNode.inputs.injection_loop;
-                } else if (promptNode.inputs.injection_switch !== undefined) {
-                    isInjecting = !!promptNode.inputs.injection_switch;
-                } else if (promptNode.inputs.injection !== undefined) {
-                    isInjecting = !!promptNode.inputs.injection;
-                }
-            }
-
-            if (!isInjecting && (!promptNode.inputs || (promptNode.inputs.injection_loop === undefined && promptNode.inputs.injection_switch === undefined && promptNode.inputs.injection === undefined))) {
-                const injectWidget = graphNode.widgets?.find(
-                    w => w.name === "injection_loop" || w.name === "injection_switch" || w.name === "injection"
-                );
+            if (promptNode.inputs && promptNode.inputs.injection_loop !== undefined) {
+                isInjecting = !!promptNode.inputs.injection_loop;
+            } else if (graphNode.properties && graphNode.properties.injection_loop !== undefined) {
+                isInjecting = !!graphNode.properties.injection_loop;
+            } else {
+                const injectWidget = graphNode.widgets?.find(w => w.name === "injection_loop");
                 isInjecting = !!injectWidget?.value;
             }
 
             const gateChannel = extractChannelName(promptNode, graphNode);
 
             if (!isInjecting) {
+                // Bypass: Forward local inputs directly to downstream consumers
                 for (const dsId in output) {
                     const dsNode = output[dsId];
                     if (!dsNode || !dsNode.inputs) continue;
@@ -488,6 +591,7 @@ app.graphToPrompt = async function() {
                     }
                 }
             } else {
+                // Active Injection: Route downstream consumers to the Return module outputs
                 const rxTargetChannel = `${gateChannel}_RX`;
                 let returnId = null;
                 let returnEntry = null;
@@ -507,6 +611,8 @@ app.graphToPrompt = async function() {
                 }
 
                 if (returnId && returnEntry) {
+                    const returnGraphNode = graphNodeByExecutionId.get(returnId);
+
                     for (const dsId in output) {
                         const dsNode = output[dsId];
                         if (!dsNode || !dsNode.inputs) continue;
@@ -519,16 +625,53 @@ app.graphToPrompt = async function() {
                                 (String(inputVal[0]) === nodeId || String(inputVal[0]) === String(graphNode.id))
                             ) {
                                 const localSlotIdx = Number(inputVal[1]);
-                                const returnInputKey = `SSG_${localSlotIdx}`;
 
-                                const resolvedOrigin = resolvePromptLinkOrigin(
-                                    output,
-                                    returnEntry,
-                                    returnInputKey
-                                );
+                                // Dual-Index Slot Key Resolution:
+                                // Return node input slots are named after manifest tracks ("MODEL", "CLIP"),
+                                // not necessarily numerical "SSG_N" prefixes.
+                                let returnInputKey = null;
 
+                                if (returnGraphNode?.inputs?.[localSlotIdx]) {
+                                    const candidateSlotName = returnGraphNode.inputs[localSlotIdx].name;
+                                    if (returnEntry.inputs && returnEntry.inputs[candidateSlotName] !== undefined) {
+                                        returnInputKey = candidateSlotName;
+                                    }
+                                }
+
+                                if (!returnInputKey) {
+                                    if (returnEntry.inputs && returnEntry.inputs[`SSG_${localSlotIdx}`] !== undefined) {
+                                        returnInputKey = `SSG_${localSlotIdx}`;
+                                    } else {
+                                        const serializedKeys = Object.keys(returnEntry.inputs || {});
+                                        if (serializedKeys[localSlotIdx]) {
+                                            returnInputKey = serializedKeys[localSlotIdx];
+                                        }
+                                    }
+                                }
+
+                                let resolvedOrigin = null;
+                                if (returnInputKey) {
+                                    resolvedOrigin = resolvePromptLinkOrigin(
+                                        output,
+                                        returnEntry,
+                                        returnInputKey
+                                    );
+                                }
+
+                                // Downstream assignment with fallback protection
                                 if (resolvedOrigin !== null) {
                                     dsNode.inputs[inputKey] = resolvedOrigin;
+                                } else {
+                                    // Graceful unlinked fallback: route through the gate's incoming input
+                                    const gateInputKey = `SSG_${localSlotIdx}`;
+                                    const fallbackOrigin = resolvePromptLinkOrigin(
+                                        output,
+                                        promptNode,
+                                        gateInputKey
+                                    );
+                                    if (fallbackOrigin !== null) {
+                                        dsNode.inputs[inputKey] = fallbackOrigin;
+                                    }
                                 }
                             }
                         }
@@ -538,18 +681,9 @@ app.graphToPrompt = async function() {
         }
 
         // ------------------------------------------------------------------
-        // 4. SMART SOCKET (Dynamic Dispatch & Fallback Flattener)
+        // 4. SMART SOCKET (Module Binding & Pass-Through Execution)
         // ------------------------------------------------------------------
         if (graphNode.type === "SSGSmartSocket" && promptNode) {
-            let isBypassed = false;
-
-            if (promptNode.inputs && promptNode.inputs.bypass !== undefined) {
-                isBypassed = !!promptNode.inputs.bypass;
-            } else {
-                const bypassWidget = graphNode.widgets?.find(w => w.name === "bypass");
-                isBypassed = !!bypassWidget?.value || !!graphNode.properties?.bypass;
-            }
-
             let manifestData = null;
             const manifestStr = graphNode.properties?.socket_manifest;
             if (manifestStr) {
@@ -560,15 +694,43 @@ app.graphToPrompt = async function() {
                 }
             }
 
-            const outputsSpec = manifestData?.outputs || [];
             const inputsSpec = manifestData?.inputs || [];
-            const inputNameToIdx = {};
-            inputsSpec.forEach((spec, idx) => {
-                inputNameToIdx[spec.name || `SSG_${idx}`] = idx;
-            });
+            const socketChanId = graphNode.properties?.channel_id;
+            let boundModuleId = null;
+            let boundModuleEntry = null;
 
-            if (isBypassed) {
-                // BYPASS PATH: Rewire downstream nodes to upstream fallback inputs or neutral literals
+            for (const candidateId in output) {
+                const candidate = output[candidateId];
+                if (!candidate) continue;
+
+                const candidateGraphNode = graphNodeByExecutionId.get(candidateId);
+                const targetSock = candidateGraphNode?.properties?.target_socket || candidate.inputs?.target_socket;
+
+                if (targetSock === socketChanId) {
+                    boundModuleId = candidateId;
+                    boundModuleEntry = candidate;
+                    break;
+                }
+            }
+
+            if (boundModuleId && boundModuleEntry) {
+                boundModuleEntry.inputs = boundModuleEntry.inputs || {};
+
+                inputsSpec.forEach((spec, idx) => {
+                    const socketInputKey = `SSG_${idx}`;
+                    const moduleInputKey = spec.name;
+
+                    const resolvedOrigin = resolvePromptLinkOrigin(
+                        output,
+                        promptNode,
+                        socketInputKey
+                    );
+
+                    if (resolvedOrigin !== null) {
+                        boundModuleEntry.inputs[moduleInputKey] = resolvedOrigin;
+                    }
+                });
+
                 for (const dsId in output) {
                     const dsNode = output[dsId];
                     if (!dsNode || !dsNode.inputs) continue;
@@ -581,93 +743,7 @@ app.graphToPrompt = async function() {
                             (String(inputVal[0]) === nodeId || String(inputVal[0]) === String(graphNode.id))
                         ) {
                             const localOutIdx = Number(inputVal[1]);
-                            const outDef = outputsSpec[localOutIdx];
-                            const fallbackKey = outDef?.fallback;
-
-                            if (fallbackKey && inputNameToIdx[fallbackKey] !== undefined) {
-                                const fallbackInIdx = inputNameToIdx[fallbackKey];
-                                const socketInputKey = `SSG_${fallbackInIdx}`;
-
-                                const resolvedOrigin = resolvePromptLinkOrigin(
-                                    output,
-                                    promptNode,
-                                    socketInputKey
-                                );
-
-                                if (resolvedOrigin !== null) {
-                                    dsNode.inputs[inputKey] = resolvedOrigin;
-                                }
-                            } else {
-                                // Diagnostic Test: Provide safe neutral literal instead of deleting input key
-                                const outTypeStr = String(outDef?.type || "").toUpperCase();
-                                if (outTypeStr.includes("STRING") || outTypeStr.includes("TEXT")) {
-                                    dsNode.inputs[inputKey] = "";
-                                } else if (outTypeStr.includes("INT") || outTypeStr.includes("FLOAT")) {
-                                    dsNode.inputs[inputKey] = 0;
-                                } else if (outTypeStr.includes("BOOL")) {
-                                    dsNode.inputs[inputKey] = false;
-                                } else {
-                                    dsNode.inputs[inputKey] = null;
-                                }
-                            }
-                        }
-                    }
-                }
-            } else {
-                // ACTIVE DISPATCH PATH: Splice socket input tensors into module & route module outputs downstream
-                const socketChanId = graphNode.properties?.channel_id;
-
-                let boundModuleId = null;
-                let boundModuleEntry = null;
-
-                for (const candidateId in output) {
-                    const candidate = output[candidateId];
-                    if (!candidate) continue;
-
-                    const candidateGraphNode = graphNodeByExecutionId.get(candidateId);
-                    const targetSock = candidateGraphNode?.properties?.target_socket || candidate.inputs?.target_socket;
-
-                    if (targetSock === socketChanId) {
-                        boundModuleId = candidateId;
-                        boundModuleEntry = candidate;
-                        break;
-                    }
-                }
-
-                if (boundModuleId && boundModuleEntry) {
-                    boundModuleEntry.inputs = boundModuleEntry.inputs || {};
-
-                    // 1. Route Socket physical inputs directly into Module inputs
-                    inputsSpec.forEach((spec, idx) => {
-                        const socketInputKey = `SSG_${idx}`;
-                        const moduleInputKey = spec.name;
-
-                        const resolvedOrigin = resolvePromptLinkOrigin(
-                            output,
-                            promptNode,
-                            socketInputKey
-                        );
-
-                        if (resolvedOrigin !== null) {
-                            boundModuleEntry.inputs[moduleInputKey] = resolvedOrigin;
-                        }
-                    });
-
-                    // 2. Rewire downstream nodes to receive from Module outputs directly
-                    for (const dsId in output) {
-                        const dsNode = output[dsId];
-                        if (!dsNode || !dsNode.inputs) continue;
-
-                        for (const inputKey of Object.keys(dsNode.inputs)) {
-                            const inputVal = dsNode.inputs[inputKey];
-
-                            if (
-                                Array.isArray(inputVal) &&
-                                (String(inputVal[0]) === nodeId || String(inputVal[0]) === String(graphNode.id))
-                            ) {
-                                const localOutIdx = Number(inputVal[1]);
-                                dsNode.inputs[inputKey] = [boundModuleId, localOutIdx];
-                            }
+                            dsNode.inputs[inputKey] = [boundModuleId, localOutIdx];
                         }
                     }
                 }

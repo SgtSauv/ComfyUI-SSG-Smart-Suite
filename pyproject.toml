@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "comfyui-ssg-smart-suite"
-version = "3.0.0"
+version = "4.0.0"
 description = "Wireless Network, RAM caching, Injection Loops, A/B Switching, and Module Plug-Ins"
 readme = "README.md"
 license = { text = "MIT" }

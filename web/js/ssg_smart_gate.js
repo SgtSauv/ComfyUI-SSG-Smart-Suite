@@ -1,24 +1,28 @@
 // ==========================================================================
-// SSG CUSTOM NODE ECOSYSTEM (V2 ARCHITECTURE)
-// Module: SSG Smart Gate Trio (Transceiver, Subgraph Relay & Return)
+// SSG CUSTOM NODE ECOSYSTEM (V4 ARCHITECTURE)
+// Module: SSG Smart Gate Trio (Master Gate, Gate Relay & Gate Return)
 // File: /web/js/ssg_smart_gate.js
 // ==========================================================================
 
 import {
     SSG_DEFAULT_WIDTH,
-    AW_BLUE,
-    DIAGNOSTIC_TIERS,
+    SSG_COLOR_YELLOW_TOPAZ,
+    SSG_COLOR_FIRE_OPAL,
+    SSG_COLOR_RUBY_RED,
+    SSG_COLOR_MUTED,
     sanitizeAndTruncateText,
-    applyDynamicShavePass,
-    drawSSGWarningOutline,
-    drawMasterGlobalTooltip,
     findTrueUpstreamAnchor,
     registerChannel,
+    registerGateLoopState,
+    isChannelBypassed,
     getChannelRecord,
+    scanActiveBroadcasters,
     forceNetworkUpdate,
     syncIncomingProperties,
-    getAllGraphNodes
+    getAllGraphNodes,
+    updateNodeBounds
 } from "./ssg_core_utils.js";
+import { createSSGDOMBanner, SSG_COLOR_NOMINAL } from "./ssg_dom_banner.js";
 
 function getGraphLink(app, node, linkId) {
     if (linkId == null) return null;
@@ -74,49 +78,50 @@ function getNextSequentialGateName(app, currentNode) {
     return `${basePrefix}${highestIndex + 1}`;
 }
 
-function getTrackInputs(node) {
-    if (!node.inputs) return [];
-    return node.inputs.filter(inp => inp.name && inp.name.startsWith("SSG_"));
+function refreshGateDropdown(node, app, targetSuffix) {
+    const channelWidget = node.widgets?.find(w => w.name === "channel");
+    if (!channelWidget) return;
+
+    const activeBroadcasters = scanActiveBroadcasters(app);
+    const validChannels = activeBroadcasters.filter(c => c.endsWith(targetSuffix));
+
+    const currentVal = channelWidget.value;
+    const boundVal = node.properties?.bound_channel || node._ssgBoundChannel;
+    const channelSet = new Set(validChannels);
+
+    if (currentVal && currentVal !== "Available" && currentVal !== "Unavailable" && currentVal !== "Default") {
+        channelSet.add(currentVal);
+    }
+    if (boundVal && boundVal !== "Available" && boundVal !== "Unavailable" && boundVal !== "Default") {
+        channelSet.add(boundVal);
+    }
+
+    const finalOptions = Array.from(channelSet);
+
+    if (finalOptions.length === 0) {
+        channelWidget.options = channelWidget.options || {};
+        channelWidget.options.values = ["Unavailable"];
+        if (boundVal) {
+            channelWidget.value = boundVal;
+        } else if (!node._isLoading && channelWidget.value !== "Unavailable") {
+            channelWidget.value = "Unavailable";
+        }
+    } else {
+        const menuOptions = ["Available", ...finalOptions];
+        channelWidget.options = channelWidget.options || {};
+        channelWidget.options.values = menuOptions;
+
+        if (boundVal && finalOptions.includes(boundVal)) {
+            channelWidget.value = boundVal;
+        } else if (!channelWidget.value || channelWidget.value === "Unavailable" || channelWidget.value === "Default") {
+            channelWidget.value = "Available";
+        }
+    }
 }
 
-function createReadOnlyChannelWidget(node, prefix = "GATE:") {
-    const widget = node.addWidget(
-        "custom",
-        "channel_display",
-        null,
-        () => {},
-        { serialize: false }
-    );
-
-    widget.draw = function (ctx, nodeRef, widgetWidth, y, widgetHeight) {
-        const chanId = nodeRef.properties?.channel_id || "UNASSIGNED";
-        const margin = 10;
-        const drawWidth = widgetWidth - (margin * 2);
-        const drawHeight = 22;
-
-        ctx.save();
-        ctx.fillStyle = "rgba(15, 18, 22, 0.85)";
-        ctx.strokeStyle = "rgba(0, 229, 255, 0.35)";
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.roundRect(margin, y, drawWidth, drawHeight, [4]);
-        ctx.fill();
-        ctx.stroke();
-
-        ctx.font = "bold 11px 'Courier New', monospace";
-        ctx.fillStyle = AW_BLUE;
-        ctx.textAlign = "center";
-        ctx.textBaseline = "middle";
-        ctx.fillText(`${prefix} ${chanId}`, margin + (drawWidth / 2), y + (drawHeight / 2));
-        ctx.restore();
-    };
-
-    widget.computeSize = function () {
-        return [SSG_DEFAULT_WIDTH, 26];
-    };
-
-    return widget;
-}
+// ==========================================================================
+// 1. MASTER GATE (SSGSmartGate)
+// ==========================================================================
 
 export function setupSmartGate(nodeType, nodeData, app) {
     const origClone = nodeType.prototype.clone;
@@ -128,6 +133,7 @@ export function setupSmartGate(nodeType, nodeData, app) {
             clonedNode.properties.is_locked = false;
             clonedNode.properties.gate_manifest = "";
             clonedNode.properties.channel_id = getNextSequentialGateName(app, clonedNode);
+            clonedNode.properties.injection_loop = true;
         }
         return clonedNode;
     };
@@ -142,13 +148,27 @@ export function setupSmartGate(nodeType, nodeData, app) {
         node.properties = node.properties || {};
 
         const genW = node.widgets?.find(w => w.name === "schema_generation");
+        const injectWidget = node.widgets?.find(w => w.name === "injection_loop");
         const manifestVal = node.properties.gate_manifest;
         const channelName = node.properties.channel_id;
+
+        const isLoopActive = (node.properties.injection_loop !== undefined)
+            ? !!node.properties.injection_loop
+            : (injectWidget ? !!injectWidget.value : true);
+
+        node.properties.injection_loop = isLoopActive;
+        if (injectWidget) {
+            injectWidget.value = isLoopActive;
+        }
 
         if (node.properties.is_locked) {
             node._isEditMode = false;
             const lockBtn = node.widgets?.find(w => w.name === "[ Lock Schema ]" || w.name === "[ Edit Schema ]");
-            if (lockBtn) lockBtn.name = "[ Edit Schema ]";
+            if (lockBtn) {
+                lockBtn.name = "[ Edit Schema ]";
+                lockBtn.label = "[ Edit Schema ]";
+                lockBtn.triggerDraw?.();
+            }
 
             let savedTracks = [];
             try {
@@ -157,58 +177,65 @@ export function setupSmartGate(nodeType, nodeData, app) {
                 savedTracks = [];
             }
 
-            const targetSlots = savedTracks.length;
-            let trackInputs = getTrackInputs(node);
-
-            while (trackInputs.length < targetSlots) {
-                const idx = trackInputs.length;
+            while (node.inputs && node.inputs.length < savedTracks.length) {
+                const idx = node.inputs.length;
                 node.addInput(`SSG_${idx}`, "*");
-                trackInputs = getTrackInputs(node);
+                node.inputs[idx].label = "◦";
             }
-            while (trackInputs.length > targetSlots) {
-                const last = trackInputs[trackInputs.length - 1];
-                node.removeInput(node.inputs.indexOf(last));
-                trackInputs = getTrackInputs(node);
+            while (node.inputs && node.inputs.length > savedTracks.length) {
+                node.removeInput(node.inputs.length - 1);
             }
 
-            while (node.outputs && node.outputs.length < targetSlots) {
+            while (node.outputs && node.outputs.length < savedTracks.length) {
                 const idx = node.outputs.length;
                 node.addOutput(`SSG_${idx}`, "*");
+                node.outputs[idx].label = "◦";
             }
-            while (node.outputs && node.outputs.length > targetSlots) {
+            while (node.outputs && node.outputs.length > savedTracks.length) {
                 node.removeOutput(node.outputs.length - 1);
             }
 
-            trackInputs = getTrackInputs(node);
-            for (let i = 0; i < targetSlots; i++) {
-                const track = savedTracks[i];
-                const inp = trackInputs[i];
-                const out = node.outputs?.[i];
+            if (node.inputs) {
+                node.inputs.forEach((input, idx) => {
+                    const track = savedTracks[idx];
+                    if (track) {
+                        input.name = `SSG_${idx}`;
+                        input.label = track.name || `SSG_${idx}`;
+                        input.type = track.type || "*";
+                    }
+                });
+            }
 
-                if (inp) {
-                    inp.name = `SSG_${i}`;
-                    inp.label = "◦";
-                    inp.type = track ? (track.type || "*") : "*";
-                }
-                if (out) {
-                    out.name = `SSG_${i}`;
-                    out.label = track ? (track.name || `Track_${i}`) : `Track_${i}`;
-                    out.type = track ? (track.type || "*") : "*";
-                }
+            if (node.outputs) {
+                node.outputs.forEach((output, idx) => {
+                    const track = savedTracks[idx];
+                    if (track) {
+                        output.name = `SSG_${idx}`;
+                        output.label = track.name || `SSG_${idx}`;
+                        output.type = track.type || "*";
+                    }
+                });
             }
 
             node.properties.gate_manifest = JSON.stringify(savedTracks);
 
             if (channelName && savedTracks.length > 0) {
-                registerChannel(`${channelName}_TX`, savedTracks, genW?.value || 1, false);
+                registerChannel(`${channelName}_TX`, savedTracks, genW?.value || 1, false, !isLoopActive);
+                registerChannel(`${channelName}_RX`, savedTracks, genW?.value || 1, false, !isLoopActive);
+                registerGateLoopState(channelName, isLoopActive);
             }
 
-            node.size = [SSG_DEFAULT_WIDTH, Math.max(120, (targetSlots * 20) + 95)];
+            const targetHeight = Math.max(120, (savedTracks.length * 20) + 115);
+            updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
         } else {
             node._isEditMode = true;
             if (node.refreshSlotLayout) {
                 node.refreshSlotLayout();
             }
+        }
+
+        if (typeof node.updateGateBannerState === "function") {
+            node.updateGateBannerState();
         }
 
         setTimeout(() => {
@@ -222,7 +249,6 @@ export function setupSmartGate(nodeType, nodeData, app) {
         if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
 
         const node = this;
-        node.size = [SSG_DEFAULT_WIDTH, 140];
         node.properties = node.properties || {};
         node.properties.is_locked = false;
         node._isEditMode = true;
@@ -235,217 +261,283 @@ export function setupSmartGate(nodeType, nodeData, app) {
             node.properties.gate_manifest = "";
         }
 
-        let trackInputs = getTrackInputs(node);
-        while (trackInputs.length > 1) {
-            const last = trackInputs[trackInputs.length - 1];
-            node.removeInput(node.inputs.indexOf(last));
-            trackInputs = getTrackInputs(node);
+        if (node.properties.injection_loop === undefined) {
+            node.properties.injection_loop = true;
         }
+
+        while (node.inputs && node.inputs.length > 1) {
+            node.removeInput(node.inputs.length - 1);
+        }
+        while (node.inputs && node.inputs.length < 1) {
+            node.addInput("SSG_0", "*");
+        }
+        node.inputs[0].name = "SSG_0";
+        node.inputs[0].label = "◦";
+        node.inputs[0].type = "*";
 
         while (node.outputs && node.outputs.length > 1) {
             node.removeOutput(node.outputs.length - 1);
         }
-
-        if (trackInputs.length === 0) {
-            node.addInput("SSG_0", "*");
-            trackInputs = getTrackInputs(node);
-        }
-        if (!node.outputs || node.outputs.length === 0) {
+        while (node.outputs && node.outputs.length < 1) {
             node.addOutput("SSG_0", "*");
         }
-
-        trackInputs[0].name = "SSG_0";
-        trackInputs[0].label = "◦";
-        trackInputs[0].type = "*";
-
         node.outputs[0].name = "SSG_0";
         node.outputs[0].label = "◦";
         node.outputs[0].type = "*";
 
-        const injectWidget = node.widgets?.find(w => w.name === "injection_loop" || w.name === "injection_switch" || w.name === "injection");
-        if (injectWidget) {
-            injectWidget.name = "injection_loop";
-            injectWidget.value = false;
-            injectWidget.callback = () => {
-                forceNetworkUpdate(app);
-            };
-        }
+        let injectWidget = node.widgets?.find(w => w.name === "injection_loop");
 
-        createReadOnlyChannelWidget(node, "GATE:");
+        // Slot 0: Native DOM Status Banner Widget
+        const domBannerWidget = createSSGDOMBanner(node, {
+            widgetName: "channel_display",
+            initialText: `CH: ${node.properties.channel_id} [Edit Mode]`,
+            initialColor: SSG_COLOR_YELLOW_TOPAZ
+        });
+
+        node.updateGateBannerState = function () {
+            const chanId = node.properties?.channel_id || "UNASSIGNED";
+            const isBypassed = isChannelBypassed(chanId);
+            const isInjecting = !!node.properties?.injection_loop;
+
+            let displayText = `CH: ${chanId}`;
+            let bannerColor = SSG_COLOR_NOMINAL; // Tier 0 Nominal: Native ComfyUI
+
+            if (node._isEditMode) {
+                displayText = `CH: ${chanId} [Edit Mode]`;
+                bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+            } else if (isBypassed) {
+                displayText = "Injection Bypass Detected";
+                bannerColor = SSG_COLOR_MUTED;
+            } else {
+                let hasCriticalFault = false;
+                let criticalMsg = "";
+                let hasDesync = false;
+                let desyncMsg = "";
+
+                // 1. Primary Locked Input Integrity Audit
+                const trackInputs = node.inputs?.filter(inp => inp && inp.type !== -1 && inp.widget === undefined) || [];
+                if (trackInputs.length > 0 && trackInputs.some(i => i.link === null || i.link === undefined)) {
+                    hasCriticalFault = true;
+                    criticalMsg = `CH: ${chanId} [Input Unlinked]`;
+                }
+
+                // 2. Hardware Loop & Affiliate Integrity Audit
+                if (isInjecting) {
+                    const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
+                    const rxChan = `${chanId}_RX`;
+                    const txChan = `${chanId}_TX`;
+                    const returnNode = allNodes.find(n => n && n.type === "SSGSmartGateReturn" && (n.properties?.bound_channel === rxChan || n.widgets?.find(w => w.name === "channel")?.value === rxChan));
+                    const relayNode = allNodes.find(n => n && n.type === "SSGSmartGateRelay" && (n.properties?.bound_channel === txChan || n.widgets?.find(w => w.name === "channel")?.value === txChan));
+
+                    if (!returnNode || !relayNode) {
+                        if (!hasCriticalFault) {
+                            hasCriticalFault = true;
+                            criticalMsg = `CH: ${chanId} [Pair Missing]`;
+                        }
+                    } else {
+                        const returnInputs = returnNode.inputs?.filter(inp => inp && inp.type !== -1 && inp.widget === undefined) || [];
+                        const relayOutputs = relayNode.outputs?.filter(out => out && out.type !== -1 && out.widget === undefined) || [];
+                        const masterGen = node.widgets?.find(w => w.name === "schema_generation")?.value || 1;
+                        const rGen = relayNode.properties?.bound_generation ?? relayNode._ssgBoundGeneration;
+                        const retGen = returnNode.properties?.bound_generation ?? returnNode._ssgBoundGeneration;
+
+                        // Check Critical Unlinked Wire inside Return Loop (Priority over Desync)
+                        if (returnInputs.length > 0 && returnInputs.some(i => i.link === null || i.link === undefined)) {
+                            if (!hasCriticalFault) {
+                                hasCriticalFault = true;
+                                criticalMsg = `CH: ${chanId} [Loop Broken]`;
+                            }
+                        }
+
+                        // Check Slot Count Mismatches & Generation Drift (Tier 1 Warning)
+                        if (returnInputs.length !== trackInputs.length || relayOutputs.length !== trackInputs.length) {
+                            hasDesync = true;
+                            desyncMsg = `CH: ${chanId} [Sync Required]`;
+                        } else if ((rGen !== undefined && rGen < masterGen) || (retGen !== undefined && retGen < masterGen)) {
+                            hasDesync = true;
+                            desyncMsg = `CH: ${chanId} [Desync]`;
+                        }
+                    }
+                }
+
+                if (hasCriticalFault) {
+                    displayText = criticalMsg;
+                    bannerColor = SSG_COLOR_FIRE_OPAL;
+                } else if (hasDesync) {
+                    displayText = desyncMsg;
+                    bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+                }
+            }
+
+            if (typeof node.updateSSGBanner === "function") {
+                node.updateSSGBanner(displayText, bannerColor);
+            }
+        };
 
         const genWidget = node.widgets?.find(w => w.name === "schema_generation");
 
         node.refreshSlotLayout = function () {
-            const channelName = node.properties.channel_id;
-            let trackInputs = getTrackInputs(node);
+            if (node._isRefreshingSlots) return;
+            node._isRefreshingSlots = true;
 
-            if (node._isEditMode) {
-                const connectedCount = trackInputs.filter(i => i.link !== null && i.link !== undefined).length || 0;
-                const targetCount = Math.min(24, Math.max(1, connectedCount + 1));
+            try {
+                const channelName = node.properties.channel_id;
+                const isLoopActive = !!node.properties.injection_loop;
 
-                while (trackInputs.length < targetCount) {
-                    const idx = trackInputs.length;
-                    node.addInput(`SSG_${idx}`, "*");
-                    trackInputs = getTrackInputs(node);
-                    trackInputs[idx].label = "◦";
-                }
-                while (trackInputs.length > targetCount && (trackInputs[trackInputs.length - 1].link === null || trackInputs[trackInputs.length - 1].link === undefined)) {
-                    const last = trackInputs[trackInputs.length - 1];
-                    node.removeInput(node.inputs.indexOf(last));
-                    trackInputs = getTrackInputs(node);
-                }
+                if (node._isEditMode) {
+                    const connectedCount = node.inputs?.filter(i => i.link !== null && i.link !== undefined).length || 0;
+                    const targetCount = Math.min(24, connectedCount + 1);
 
-                while (node.outputs.length < trackInputs.length) {
-                    const idx = node.outputs.length;
-                    node.addOutput(`SSG_${idx}`, "*");
-                }
-                while (node.outputs.length > trackInputs.length) {
-                    node.removeOutput(node.outputs.length - 1);
-                }
+                    while (node.inputs.length < targetCount) {
+                        const idx = node.inputs.length;
+                        node.addInput(`SSG_${idx}`, "*");
+                        node.inputs[idx].label = "◦";
+                    }
+                    while (node.inputs.length > targetCount && (node.inputs[node.inputs.length - 1].link === null || node.inputs[node.inputs.length - 1].link === undefined)) {
+                        node.removeInput(node.inputs.length - 1);
+                    }
 
-                const currentTracks = [];
-                for (let i = 0; i < trackInputs.length; i++) {
-                    const inp = trackInputs[i];
-                    const out = node.outputs[i];
+                    while (node.outputs.length < node.inputs.length) {
+                        const idx = node.outputs.length;
+                        node.addOutput(`SSG_${idx}`, "*");
+                        node.outputs[idx].label = "◦";
+                    }
+                    while (node.outputs.length > node.inputs.length) {
+                        node.removeOutput(node.outputs.length - 1);
+                    }
 
-                    inp.name = `SSG_${i}`;
-                    inp.label = "◦";
-
-                    if (out) out.name = `SSG_${i}`;
-
-                    if (inp.link !== null && inp.link !== undefined) {
-                        const link = getGraphLink(app, node, inp.link);
-                        if (link) {
-                            const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-                            inp.type = resolved.type || "*";
-                            if (out) {
-                                out.label = resolved.name;
-                                out.type = resolved.type || "*";
+                    const currentTracks = [];
+                    node.inputs.forEach((input, idx) => {
+                        input.name = `SSG_${idx}`;
+                        if (input.link !== null && input.link !== undefined) {
+                            const link = getGraphLink(app, node, input.link);
+                            if (link) {
+                                const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
+                                input.label = resolved.name;
+                                input.type = resolved.type;
+                                currentTracks.push({ index: idx, name: resolved.name, type: resolved.type });
                             }
-                            currentTracks.push({ index: i, name: resolved.name, type: resolved.type || "*" });
+                        } else {
+                            input.label = "◦";
+                            input.type = "*";
                         }
-                    } else {
-                        inp.type = "*";
-                        if (out) {
-                            out.label = "◦";
-                            out.type = "*";
+
+                        if (node.outputs[idx]) {
+                            node.outputs[idx].name = `SSG_${idx}`;
+                            node.outputs[idx].label = input.label;
+                            node.outputs[idx].type = input.type;
                         }
+                    });
+
+                    node.properties.gate_manifest = JSON.stringify(currentTracks);
+
+                    if (channelName) {
+                        registerChannel(`${channelName}_TX`, currentTracks, genWidget?.value || 1, true, !isLoopActive);
+                        registerChannel(`${channelName}_RX`, currentTracks, genWidget?.value || 1, true, !isLoopActive);
+                        registerGateLoopState(channelName, isLoopActive);
+                    }
+                } else {
+                    let savedTracks = [];
+                    try {
+                        savedTracks = JSON.parse(node.properties.gate_manifest || "[]");
+                    } catch (e) {
+                        savedTracks = [];
+                    }
+
+                    const targetCount = savedTracks.length;
+
+                    while (node.inputs.length < targetCount) {
+                        const idx = node.inputs.length;
+                        node.addInput(`SSG_${idx}`, "*");
+                        node.inputs[idx].label = "◦";
+                    }
+                    while (node.inputs.length > targetCount) {
+                        node.removeInput(node.inputs.length - 1);
+                    }
+
+                    while (node.outputs.length < targetCount) {
+                        const idx = node.outputs.length;
+                        node.addOutput(`SSG_${idx}`, "*");
+                        node.outputs[idx].label = "◦";
+                    }
+                    while (node.outputs > targetCount) {
+                        node.removeOutput(node.outputs.length - 1);
+                    }
+
+                    savedTracks.forEach((track, idx) => {
+                        if (node.inputs[idx]) {
+                            node.inputs[idx].name = `SSG_${idx}`;
+                            node.inputs[idx].label = track.name || `SSG_${idx}`;
+                            node.inputs[idx].type = track.type || "*";
+                        }
+                        if (node.outputs[idx]) {
+                            node.outputs[idx].name = `SSG_${idx}`;
+                            node.outputs[idx].label = track.name || `SSG_${idx}`;
+                            node.outputs[idx].type = track.type || "*";
+                        }
+                    });
+
+                    node.properties.gate_manifest = JSON.stringify(savedTracks);
+
+                    if (channelName) {
+                        registerChannel(`${channelName}_TX`, savedTracks, genWidget?.value || 1, false, !isLoopActive);
+                        registerChannel(`${channelName}_RX`, savedTracks, genWidget?.value || 1, false, !isLoopActive);
+                        registerGateLoopState(channelName, isLoopActive);
                     }
                 }
 
-                node.properties.gate_manifest = JSON.stringify(currentTracks);
-
-                if (channelName) {
-                    registerChannel(`${channelName}_TX`, currentTracks, genWidget?.value || 1, true);
-                }
-            } else {
-                let savedTracks = [];
-                try {
-                    savedTracks = JSON.parse(node.properties.gate_manifest || "[]");
-                } catch (e) {
-                    savedTracks = [];
-                }
-
-                const targetCount = savedTracks.length;
-
-                while (trackInputs.length < targetCount) {
-                    const idx = trackInputs.length;
-                    node.addInput(`SSG_${idx}`, "*");
-                    trackInputs = getTrackInputs(node);
-                }
-                while (trackInputs.length > targetCount) {
-                    const last = trackInputs[trackInputs.length - 1];
-                    node.removeInput(node.inputs.indexOf(last));
-                    trackInputs = getTrackInputs(node);
-                }
-
-                while (node.outputs.length < targetCount) {
-                    const idx = node.outputs.length;
-                    node.addOutput(`SSG_${idx}`, "*");
-                }
-                while (node.outputs.length > targetCount) {
-                    node.removeOutput(node.outputs.length - 1);
-                }
-
-                const currentTracks = [];
-                for (let i = 0; i < targetCount; i++) {
-                    const inp = trackInputs[i];
-                    const out = node.outputs[i];
-
-                    inp.name = `SSG_${i}`;
-                    inp.label = "◦";
-
-                    if (out) out.name = `SSG_${i}`;
-
-                    if (inp.link !== null && inp.link !== undefined) {
-                        const link = getGraphLink(app, node, inp.link);
-                        if (link) {
-                            const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-                            inp.type = resolved.type || "*";
-                            if (out) {
-                                out.label = resolved.name;
-                                out.type = resolved.type || "*";
-                            }
-                        }
-                    }
-                    currentTracks.push({ index: i, name: out?.label || `Track_${i}`, type: inp.type });
-                }
-
-                node.properties.gate_manifest = JSON.stringify(currentTracks);
-
-                if (channelName) {
-                    registerChannel(`${channelName}_TX`, currentTracks, genWidget?.value || 1, false);
-                }
+                const targetHeight = Math.max(120, (node.inputs.length * 20) + 115);
+                updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
+                node.updateGateBannerState();
+            } finally {
+                node._isRefreshingSlots = false;
             }
-
-            node.size = [SSG_DEFAULT_WIDTH, Math.max(120, (trackInputs.length * 20) + 95)];
-            if (node.graph) node.graph.setDirtyCanvas(true, true);
         };
 
-        const lockButton = node.addWidget(
-            "button",
-            node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
-            null,
-            () => {
+        const lockButton = {
+            type: "button",
+            name: node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
+            label: node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
+            value: null,
+            callback: () => {
                 node._isEditMode = !node._isEditMode;
                 node.properties.is_locked = !node._isEditMode;
-                lockButton.name = node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]";
 
-                let trackInputs = getTrackInputs(node);
+                const nextLabel = node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]";
+                lockButton.name = nextLabel;
+                lockButton.label = nextLabel;
+
+                if (typeof node.onWidgetChanged === "function") {
+                    node.onWidgetChanged(lockButton.name, lockButton.value, null, lockButton);
+                }
 
                 if (!node._isEditMode) {
-                    for (let i = trackInputs.length - 1; i >= 0; i--) {
-                        if (trackInputs[i].link === null || trackInputs[i].link === undefined) {
-                            const realIdx = node.inputs.indexOf(trackInputs[i]);
-                            node.removeInput(realIdx);
+                    for (let i = node.inputs.length - 1; i >= 0; i--) {
+                        if (node.inputs[i].link === null || node.inputs[i].link === undefined) {
+                            node.removeInput(i);
                             if (node.outputs[i]) node.removeOutput(i);
                         }
                     }
 
-                    trackInputs = getTrackInputs(node);
                     const currentTracks = [];
-                    for (let i = 0; i < trackInputs.length; i++) {
-                        const inp = trackInputs[i];
-                        const out = node.outputs[i];
-
-                        inp.name = `SSG_${i}`;
-                        inp.label = "◦";
-
-                        if (out) out.name = `SSG_${i}`;
-
-                        if (inp.link !== null && inp.link !== undefined) {
-                            const link = getGraphLink(app, node, inp.link);
+                    node.inputs.forEach((input, idx) => {
+                        input.name = `SSG_${idx}`;
+                        if (input.link !== null && input.link !== undefined) {
+                            const link = getGraphLink(app, node, input.link);
                             if (link) {
                                 const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-                                inp.type = resolved.type || "*";
-                                if (out) {
-                                    out.label = resolved.name;
-                                    out.type = resolved.type || "*";
-                                }
+                                input.label = resolved.name;
+                                input.type = resolved.type || "*";
                             }
                         }
-                        currentTracks.push({ index: i, name: out?.label || `Track_${i}`, type: inp.type });
-                    }
+                        currentTracks.push({ index: idx, name: input.label, type: input.type });
+
+                        if (node.outputs[idx]) {
+                            node.outputs[idx].name = `SSG_${idx}`;
+                            node.outputs[idx].label = input.label;
+                            node.outputs[idx].type = input.type;
+                        }
+                    });
 
                     node.properties.gate_manifest = JSON.stringify(currentTracks);
 
@@ -454,23 +546,115 @@ export function setupSmartGate(nodeType, nodeData, app) {
                     }
 
                     const channelName = node.properties.channel_id;
+                    const isLoopActive = !!node.properties.injection_loop;
+
                     if (channelName) {
-                        registerChannel(`${channelName}_TX`, currentTracks, genWidget?.value || 1, false);
+                        registerChannel(`${channelName}_TX`, currentTracks, genWidget?.value || 1, false, !isLoopActive);
+                        registerChannel(`${channelName}_RX`, currentTracks, genWidget?.value || 1, false, !isLoopActive);
+                        registerGateLoopState(channelName, isLoopActive);
                     }
                 }
 
                 node.refreshSlotLayout();
+                node.updateGateBannerState();
+
+                lockButton.triggerDraw?.();
+                node.setDirtyCanvas(true, true);
+
+                if (node.graph) {
+                    node.graph._version = (node.graph._version || 0) + 1;
+                    if (typeof node.graph.change === "function") {
+                        node.graph.change();
+                    }
+                }
+                app.canvas?.setDirty(true, true);
+
+                if (typeof app.canvas?.draw === "function") {
+                    app.canvas.draw(true, true);
+                }
+                requestAnimationFrame(() => {
+                    app.canvas?.draw?.(true, true);
+                });
+
+                // Immediate affiliate redraw propagation
+                const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
+                const chanId = node.properties?.channel_id;
+                if (chanId) {
+                    allNodes.forEach(n => {
+                        if (n && n.type === "SSGSmartGateRelay" && typeof n.updateRelayBannerState === "function") {
+                            n.updateRelayBannerState();
+                        } else if (n && n.type === "SSGSmartGateReturn" && typeof n.updateReturnBannerState === "function") {
+                            n.updateReturnBannerState();
+                        }
+                    });
+                }
+
                 forceNetworkUpdate(app);
             }
+        };
+
+        // Slot 3: Hardware Toggle Switch
+        if (!injectWidget) {
+            injectWidget = node.addWidget(
+                "toggle",
+                "injection_loop",
+                node.properties.injection_loop,
+                function (val) {
+                    const activeVal = !!val;
+                    node.properties.injection_loop = activeVal;
+                    const channelName = node.properties.channel_id;
+                    if (channelName) {
+                        registerGateLoopState(channelName, activeVal);
+                    }
+                    node.updateGateBannerState();
+                    forceNetworkUpdate(app);
+                    if (node.graph) {
+                        node.graph._version = (node.graph._version || 0) + 1;
+                        node.graph.setDirtyCanvas(true, true);
+                    }
+                },
+                { on: "On", off: "Off" }
+            );
+        } else {
+            const origCallback = injectWidget.callback;
+            injectWidget.value = !!node.properties.injection_loop;
+            injectWidget.callback = function (val) {
+                const activeVal = !!val;
+                node.properties.injection_loop = activeVal;
+                if (origCallback) origCallback.call(this, activeVal);
+
+                const channelName = node.properties.channel_id;
+                if (channelName) {
+                    registerGateLoopState(channelName, activeVal);
+                }
+
+                node.updateGateBannerState();
+                forceNetworkUpdate(app);
+
+                if (node.graph) {
+                    node.graph._version = (node.graph._version || 0) + 1;
+                    node.graph.setDirtyCanvas(true, true);
+                }
+            };
+        }
+
+        // Deterministic Slot Assembly: [Slot 0: Banner, Slot 1: Button, ...Remaining, Slot 3: Toggle]
+        const remainingWidgets = (node.widgets || []).filter(
+            w => w !== injectWidget && w !== domBannerWidget && w !== lockButton
         );
+        node.widgets = [domBannerWidget, lockButton, ...remainingWidgets, injectWidget].filter(Boolean);
 
         node.onConnectionsChange = function () {
             if (node._isEditMode) {
                 node.refreshSlotLayout();
             }
+            node.updateGateBannerState();
+            forceNetworkUpdate(app);
         };
 
         node.refreshSlotLayout();
+        node.updateGateBannerState();
+        updateNodeBounds(node, SSG_DEFAULT_WIDTH, 140);
 
         setTimeout(() => {
             forceNetworkUpdate(app);
@@ -485,7 +669,7 @@ export function setupSmartGate(nodeType, nodeData, app) {
         const node = this;
         const chanId = node.properties?.channel_id;
 
-        if (chanId && window.SSG_PipeRegistry) {
+        if (chanId) {
             delete window.SSG_PipeRegistry[`${chanId}_TX`];
             delete window.SSG_PipeRegistry[`${chanId}_RX`];
         }
@@ -498,161 +682,308 @@ export function setupSmartGate(nodeType, nodeData, app) {
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;
     nodeType.prototype.onDrawForeground = function (ctx) {
         if (origOnDrawForeground) origOnDrawForeground.apply(this, arguments);
+    };
+}
+
+// ==========================================================================
+// 2. GATE RELAY (SSGSmartGateRelay) - Loop Transmitter Consumer
+// ==========================================================================
+
+export function setupSmartGateRelay(nodeType, nodeData, app) {
+    const origOnConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (info) {
+        syncIncomingProperties(this, info);
+
+        if (origOnConfigure) origOnConfigure.apply(this, arguments);
 
         const node = this;
-        applyDynamicShavePass(node);
+        node.properties = node.properties || {};
 
-        const channelName = node.properties.channel_id;
-        const injectWidget = node.widgets?.find(w => w.name === "injection_loop" || w.name === "injection_switch" || w.name === "injection");
-        const isInjecting = injectWidget?.value === true;
-        const trackInputs = getTrackInputs(node);
+        node._ssgBoundGeneration = node.properties.bound_generation ?? 0;
+        node._ssgBoundChannel = node.properties.bound_channel || "";
 
-        let activeTier = DIAGNOSTIC_TIERS.TIER_0_NOMINAL;
-        const hasBrokenInputLink = !node._isEditMode && trackInputs.length > 0 && trackInputs.some(i => i.link === null || i.link === undefined);
+        const manifestVal = node.properties.relay_manifest;
 
-        let hasTypeMismatch = false;
-        let hasNameMismatch = false;
-
-        if (!node._isEditMode && trackInputs.length > 0) {
-            let savedTracks = [];
+        if (manifestVal && node.outputs) {
             try {
-                savedTracks = JSON.parse(node.properties.gate_manifest || "[]");
+                const savedTracks = typeof manifestVal === "string" ? JSON.parse(manifestVal) : manifestVal;
+                if (Array.isArray(savedTracks)) {
+                    savedTracks.forEach((track, idx) => {
+                        if (node.outputs[idx]) {
+                            node.outputs[idx]._trackIdx = track.index !== undefined ? track.index : idx;
+                            if (track.type && track.type !== "*") {
+                                node.outputs[idx].type = track.type;
+                            }
+                        }
+                    });
+                }
+            } catch (e) {}
+        }
+
+        refreshGateDropdown(node, app, "_TX");
+        if (typeof node.updateRelayBannerState === "function") {
+            node.updateRelayBannerState();
+        }
+        const targetHeight = Math.max(80, (node.outputs ? node.outputs.length * 20 : 0) + 95);
+        updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
+    };
+
+    const origOnNodeCreated = nodeType.prototype.onNodeCreated;
+    nodeType.prototype.onNodeCreated = function () {
+        if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
+
+        const node = this;
+        node.properties = node.properties || {};
+        node.properties.bound_channel = "";
+        node.properties.bound_generation = 0;
+        node._ssgBoundGeneration = 0;
+        node._ssgBoundChannel = "";
+        node._isLoading = false;
+
+        while (node.outputs && node.outputs.length > 0) {
+            node.removeOutput(0);
+        }
+        node.outputs = [];
+
+        let channelWidget = node.widgets?.find(w => w.name === "channel");
+
+        // Slot 0: Native DOM Status Banner Widget
+        const domBannerWidget = createSSGDOMBanner(node, {
+            widgetName: "channel_display",
+            initialText: "CH: Available",
+            initialColor: SSG_COLOR_YELLOW_TOPAZ
+        });
+
+        node.updateRelayBannerState = function () {
+            const chW = node.widgets?.find(w => w.name === "channel");
+            const targetChan = chW?.value || node.properties?.bound_channel || "Available";
+            const record = getChannelRecord(targetChan);
+            const isBypassed = isChannelBypassed(targetChan);
+
+            let displayText = `CH: ${targetChan}`;
+            let bannerColor = SSG_COLOR_NOMINAL; // Tier 0 Nominal: Native ComfyUI
+
+            if (targetChan === "Available") {
+                displayText = "CH: Available";
+                bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+            } else if (targetChan === "Unavailable" || !record) {
+                displayText = targetChan === "Unavailable" ? "CH: Unavailable" : `CH: ${targetChan}`;
+                bannerColor = SSG_COLOR_RUBY_RED;
+            } else if (isBypassed) {
+                displayText = "Injection Bypass Detected";
+                bannerColor = SSG_COLOR_MUTED;
+            } else if (record.is_editing) {
+                displayText = `CH: ${targetChan} [Edit Mode]`;
+                bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+            } else {
+                const relayOutputs = node.outputs?.filter(out => out && out.type !== -1 && out.widget === undefined) || [];
+                const isTrackMismatch = record.tracks && (relayOutputs.length !== record.tracks.length);
+                const isGenMismatch = record.generation !== node._ssgBoundGeneration;
+
+                if (relayOutputs.length === 0 || isTrackMismatch) {
+                    displayText = `CH: ${targetChan} [Sync Required]`;
+                    bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+                } else if (isGenMismatch) {
+                    displayText = `CH: ${targetChan} [Desync]`;
+                    bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+                }
+            }
+
+            if (typeof node.updateSSGBanner === "function") {
+                node.updateSSGBanner(displayText, bannerColor);
+            }
+        };
+
+        function syncRelayTracks() {
+            const chW = node.widgets?.find(w => w.name === "channel");
+            const targetChannel = chW?.value;
+            if (!targetChannel || targetChannel === "Available" || targetChannel === "Unavailable") return;
+
+            const record = getChannelRecord(targetChannel);
+            if (!record || !record.tracks) return;
+
+            const existingLinksMap = new Map();
+            if (node.outputs) {
+                node.outputs.forEach(out => {
+                    if (out.links && out.links.length > 0) {
+                        const key = out._trackIdx !== undefined ? out._trackIdx : out.name;
+                        existingLinksMap.set(key, [...out.links]);
+                    }
+                });
+            }
+
+            node.outputs = [];
+
+            record.tracks.forEach((track, idx) => {
+                const cleanName = sanitizeAndTruncateText(track.name, 16);
+                const cleanType = track.type || "*";
+
+                node.addOutput(cleanName, cleanType);
+                const newSlot = node.outputs[idx];
+                newSlot._trackIdx = track.index !== undefined ? track.index : idx;
+
+                const savedLinks = existingLinksMap.get(newSlot._trackIdx) || existingLinksMap.get(cleanName);
+                if (savedLinks) {
+                    newSlot.links = savedLinks;
+                    savedLinks.forEach(linkId => {
+                        const graphLink = getGraphLink(app, node, linkId);
+                        if (graphLink) {
+                            graphLink.origin_slot = idx;
+                        }
+                    });
+                }
+            });
+
+            node._ssgBoundGeneration = record.generation;
+            node._ssgBoundChannel = targetChannel;
+            node.properties.bound_generation = record.generation;
+            node.properties.bound_channel = targetChannel;
+
+            node.properties.relay_manifest = record.tracks.map(track => ({
+                index: track.index,
+                name: track.name,
+                type: track.type
+            }));
+
+            const targetHeight = Math.max(80, (node.outputs.length * 20) + 95);
+            updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
+
+            node.updateRelayBannerState();
+            node.setDirtyCanvas(true, true);
+
+            // Notify Master Gate immediately
+            const cleanBase = targetChannel.replace(/_TX$/, "");
+            const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
+            const masterGate = allNodes.find(n => n && n.type === "SSGSmartGate" && (n.properties?.channel_id === cleanBase || n.widgets?.find(w => w.name === "channel_name")?.value?.trim() === cleanBase));
+            if (masterGate) {
+                if (typeof masterGate.updateGateBannerState === "function") {
+                    masterGate.updateGateBannerState();
+                }
+                masterGate.setDirtyCanvas(true, true);
+            }
+
+            forceNetworkUpdate(app);
+        }
+
+        // Slot 1: Native Action Button
+        const syncButton = {
+            type: "button",
+            name: "[ Sync Tracks ]",
+            label: "[ Sync Tracks ]",
+            value: null,
+            callback: () => {
+                syncRelayTracks();
+                if (typeof node.onWidgetChanged === "function") {
+                    node.onWidgetChanged(syncButton.name, syncButton.value, null, syncButton);
+                }
+            }
+        };
+
+        // Slot 2: Channel Dropdown Combo
+        if (!channelWidget) {
+            channelWidget = node.addWidget("combo", "channel", "Available", (v) => {
+                const clean = (v || "").trim();
+                if (clean !== "Available" && clean !== "Unavailable") {
+                    node.properties.bound_channel = clean;
+                    node._ssgBoundChannel = clean;
+                }
+                refreshGateDropdown(node, app, "_TX");
+                node.updateRelayBannerState();
+                if (node.graph) node.graph.setDirtyCanvas(true, true);
+                forceNetworkUpdate(app);
+            }, { values: ["Available"] });
+        } else {
+            const origCallback = channelWidget.callback;
+            channelWidget.callback = function (v) {
+                const clean = (v || "").trim();
+                if (clean !== "Available" && clean !== "Unavailable") {
+                    node.properties.bound_channel = clean;
+                    node._ssgBoundChannel = clean;
+                }
+                refreshGateDropdown(node, app, "_TX");
+                node.updateRelayBannerState();
+                if (origCallback) origCallback.apply(this, arguments);
+                if (node.graph) node.graph.setDirtyCanvas(true, true);
+                forceNetworkUpdate(app);
+            };
+        }
+
+        node._ssgRefreshDropdown = () => {
+            refreshGateDropdown(node, app, "_TX");
+            node.updateRelayBannerState();
+        };
+
+        // Deterministic Slot Assembly: [Slot 0: Banner, Slot 1: Button, Slot 2: Channel, ...Remaining]
+        const remainingWidgets = (node.widgets || []).filter(
+            w => w !== domBannerWidget && w !== syncButton && w !== channelWidget
+        );
+        node.widgets = [domBannerWidget, syncButton, channelWidget, ...remainingWidgets].filter(Boolean);
+
+        refreshGateDropdown(node, app, "_TX");
+        node.updateRelayBannerState();
+        updateNodeBounds(node, SSG_DEFAULT_WIDTH, 100);
+    };
+
+    const origOnDrawForeground = nodeType.prototype.onDrawForeground;
+    nodeType.prototype.onDrawForeground = function (ctx) {
+        if (origOnDrawForeground) origOnDrawForeground.apply(this, arguments);
+    };
+}
+
+// ==========================================================================
+// 3. GATE RETURN (SSGSmartGateReturn) - Loop Return Receiver
+// ==========================================================================
+
+export function setupSmartGateReturn(nodeType, nodeData, app) {
+    const origOnConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (info) {
+        syncIncomingProperties(this, info);
+
+        if (origOnConfigure) origOnConfigure.apply(this, arguments);
+
+        const node = this;
+        node.properties = node.properties || {};
+
+        node._ssgBoundGeneration = node.properties.bound_generation ?? 0;
+        node._ssgBoundChannel = node.properties.bound_channel || "";
+
+        const manifestVal = node.properties.return_manifest;
+        let savedTracks = [];
+
+        if (manifestVal) {
+            try {
+                savedTracks = typeof manifestVal === "string" ? JSON.parse(manifestVal) : manifestVal;
+                if (Array.isArray(savedTracks)) {
+                    savedTracks.forEach((track, idx) => {
+                        if (node.inputs[idx]) {
+                            node.inputs[idx]._trackIdx = track.index !== undefined ? track.index : idx;
+                            if (track.type && track.type !== "*") {
+                                node.inputs[idx].type = track.type;
+                            }
+                        }
+                    });
+                }
             } catch (e) {
                 savedTracks = [];
             }
+        }
 
-            for (let i = 0; i < trackInputs.length; i++) {
-                const input = trackInputs[i];
-                const manifestTrack = savedTracks[i];
-
-                if (input.link !== null && input.link !== undefined && manifestTrack) {
-                    const link = getGraphLink(app, node, input.link);
-                    if (link) {
-                        const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-
-                        const expectedType = manifestTrack.type || "*";
-                        const actualType = resolved.type || "*";
-                        if (expectedType !== "*" && actualType !== "*" && expectedType !== actualType) {
-                            hasTypeMismatch = true;
-                        }
-
-                        const expectedName = manifestTrack.name || `SSG_${i}`;
-                        const actualName = resolved.name || "◦";
-                        if (expectedName !== actualName) {
-                            hasNameMismatch = true;
-                        }
-                    }
-                }
+        // Return Self-Healing Pre-Hydration Check
+        if (node._ssgBoundChannel && savedTracks.length > 0) {
+            const curRec = getChannelRecord(node._ssgBoundChannel);
+            if (!curRec) {
+                const cleanBase = node._ssgBoundChannel.replace(/_RX$/, "");
+                const isBypassed = isChannelBypassed(cleanBase);
+                registerChannel(node._ssgBoundChannel, savedTracks, node._ssgBoundGeneration || 1, false, isBypassed);
             }
         }
 
-        let moduleError = false;
-        if (isInjecting && channelName) {
-            const txRecord = getChannelRecord(`${channelName}_TX`);
-            const rxRecord = getChannelRecord(`${channelName}_RX`);
-
-            if (!txRecord || txRecord.is_editing || !rxRecord || rxRecord.is_editing) {
-                moduleError = true;
-            } else if (txRecord.tracks.length !== rxRecord.tracks.length) {
-                moduleError = true;
-            }
+        refreshGateDropdown(node, app, "_RX");
+        if (typeof node.updateReturnBannerState === "function") {
+            node.updateReturnBannerState();
         }
-
-        if (!channelName) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_3_RED;
-        } else if (hasBrokenInputLink || hasTypeMismatch || (isInjecting && moduleError)) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_2_ORANGE;
-        } else if (node._isEditMode || hasNameMismatch) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_1_YELLOW;
-        }
-        drawSSGWarningOutline(node, ctx, activeTier);
-
-        if (node.flags?.collapsed) {
-            const cleanName = sanitizeAndTruncateText(channelName || "ERROR", 16);
-            const activeCount = trackInputs.filter(i => i.link !== null && i.link !== undefined).length || 0;
-            const modeState = node._isEditMode ? "EDIT" : "LOCKED";
-            const injectState = isInjecting ? "INJECT" : "BYPASS";
-            const customTitle = node.title !== "Gate" && node.title !== "SSG Smart Gate" ? ` - ${node.title}` : "";
-            const badgeLabel = `GATE: ${cleanName}${customTitle} [${activeCount} Trk | ${injectState} | ${modeState}]`;
-
-            drawMasterGlobalTooltip(node, ctx, app, badgeLabel);
-        }
-    };
-}
-
-export function setupSmartGateRelay(nodeType, nodeData, app) {
-    const origClone = nodeType.prototype.clone;
-    nodeType.prototype.clone = function () {
-        const clonedNode = origClone ? origClone.apply(this, arguments) : null;
-        if (clonedNode) {
-            clonedNode.properties = clonedNode.properties || {};
-            clonedNode.properties.bound_channel = "";
-            clonedNode.properties.bound_generation = 0;
-            clonedNode.properties.relay_manifest = "";
-            clonedNode.properties.channel_id = "";
-            clonedNode._ssgBoundGeneration = 0;
-            clonedNode._ssgBoundChannel = "";
-
-            while (clonedNode.outputs && clonedNode.outputs.length > 0) {
-                clonedNode.removeOutput(0);
-            }
-            clonedNode.outputs = [];
-
-            if (clonedNode._ssgRefreshDropdown) clonedNode._ssgRefreshDropdown();
-        }
-        return clonedNode;
-    };
-
-    const origOnConfigure = nodeType.prototype.onConfigure;
-    nodeType.prototype.onConfigure = function (info) {
-        syncIncomingProperties(this, info);
-
-        if (origOnConfigure) origOnConfigure.apply(this, arguments);
-
-        const node = this;
-        node.properties = node.properties || {};
-
-        node._ssgBoundGeneration = node.properties.bound_generation || 0;
-        node._ssgBoundChannel = node.properties.bound_channel || "";
-
-        let savedTracks = [];
-        try {
-            savedTracks = JSON.parse(node.properties.relay_manifest || "[]");
-        } catch (e) {
-            savedTracks = [];
-        }
-
-        while (node.inputs && node.inputs.length > 0) {
-            node.removeInput(0);
-        }
-        node.inputs = [];
-
-        while (node.outputs && node.outputs.length < savedTracks.length) {
-            const idx = node.outputs.length;
-            node.addOutput(`SSG_${idx}`, "*");
-        }
-        while (node.outputs && node.outputs.length > savedTracks.length) {
-            node.removeOutput(node.outputs.length - 1);
-        }
-
-        if (node.outputs) {
-            node.outputs.forEach((out, idx) => {
-                const track = savedTracks[idx];
-                if (track) {
-                    out.name = `SSG_${idx}`;
-                    out.label = track.name || `SSG_${idx}`;
-                    out.type = track.type || "*";
-                }
-            });
-        }
-
-        node.size = [SSG_DEFAULT_WIDTH, Math.max(100, (savedTracks.length * 20) + 70)];
-
-        if (node._ssgRefreshDropdown) node._ssgRefreshDropdown();
-        setTimeout(() => {
-            forceNetworkUpdate(app);
-            if (node.graph) node.graph.setDirtyCanvas(true, true);
-        }, 50);
+        const targetHeight = Math.max(80, (node.inputs ? node.inputs.length * 20 : 0) + 95);
+        updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
     };
 
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;
@@ -660,474 +991,216 @@ export function setupSmartGateRelay(nodeType, nodeData, app) {
         if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
 
         const node = this;
-        node.size = [SSG_DEFAULT_WIDTH, 100];
         node.properties = node.properties || {};
-        node.properties.bound_generation = node.properties.bound_generation || 0;
-        node.properties.bound_channel = node.properties.bound_channel || "";
-        node._ssgBoundGeneration = node.properties.bound_generation;
-        node._ssgBoundChannel = node.properties.bound_channel;
+        node.properties.bound_channel = "";
+        node.properties.bound_generation = 0;
+        node._ssgBoundGeneration = 0;
+        node._ssgBoundChannel = "";
+        node._isLoading = false;
 
         while (node.inputs && node.inputs.length > 0) {
             node.removeInput(0);
         }
         node.inputs = [];
 
-        while (node.outputs && node.outputs.length > 0) {
-            node.removeOutput(0);
-        }
-        node.outputs = [];
-
         let channelWidget = node.widgets?.find(w => w.name === "channel");
-        if (!channelWidget) {
-            channelWidget = node.addWidget("combo", "channel", "Unavailable", (val) => {
-                const cleanVal = (val || "").trim();
-                if (cleanVal !== "Available" && cleanVal !== "Unavailable") {
-                    node.properties.channel_id = cleanVal;
-                }
-                if (node.graph) node.graph.setDirtyCanvas(true, true);
-            }, { values: ["Unavailable"] });
-        }
 
-        if (channelWidget) {
-            const origMouse = channelWidget.mouse;
-            channelWidget.mouse = function() {
-                if (typeof node._ssgRefreshDropdown === "function") {
-                    node._ssgRefreshDropdown();
-                }
-                if (origMouse) return origMouse.apply(this, arguments);
-            };
-        }
-
-        node._ssgRefreshDropdown = function () {
-            if (!channelWidget) return;
-            const currentSelected = (channelWidget.value || "").trim();
-
-            const activeTxChannels = [];
-            const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
-
-            for (const n of allNodes) {
-                if (n && n.type === "SSGSmartGate") {
-                    const val = n.properties?.channel_id;
-                    if (val) activeTxChannels.push(`${val}_TX`);
-                }
-            }
-
-            for (const chan in window.SSG_PipeRegistry) {
-                if (chan.endsWith("_TX") && !activeTxChannels.includes(chan)) {
-                    activeTxChannels.push(chan);
-                }
-            }
-
-            if (activeTxChannels.length === 0) {
-                channelWidget.options.values = ["Unavailable"];
-                if (node.properties.bound_channel) {
-                    channelWidget.value = node.properties.bound_channel;
-                } else {
-                    channelWidget.value = "Unavailable";
-                    node.properties.channel_id = "";
-                }
-                return;
-            }
-
-            const menuOptions = ["Available", ...activeTxChannels];
-            channelWidget.options.values = menuOptions;
-
-            if (currentSelected && activeTxChannels.includes(currentSelected)) {
-                channelWidget.value = currentSelected;
-                node.properties.channel_id = currentSelected;
-            } else if (node.properties.bound_channel && activeTxChannels.includes(node.properties.bound_channel)) {
-                channelWidget.value = node.properties.bound_channel;
-                node.properties.channel_id = node.properties.bound_channel;
-            } else if (!currentSelected || currentSelected === "Unavailable" || currentSelected === "Default") {
-                channelWidget.value = "Available";
-                node.properties.channel_id = "";
-            }
-        };
-
-        node.addWidget(
-            "button",
-            "[ Sync Tracks ]",
-            null,
-            () => {
-                const rawChannel = (channelWidget.value || "").trim();
-                if (!rawChannel || rawChannel === "Available" || rawChannel === "Unavailable") {
-                    return;
-                }
-
-                const record = getChannelRecord(rawChannel);
-                if (!record || !record.tracks || record.tracks.length === 0) {
-                    return;
-                }
-
-                node.properties.channel_id = rawChannel;
-                node.properties.bound_channel = rawChannel;
-                node.properties.bound_generation = record.generation;
-                node.properties.relay_manifest = JSON.stringify(record.tracks);
-                node._ssgBoundGeneration = record.generation;
-                node._ssgBoundChannel = rawChannel;
-
-                while (node.outputs.length < record.tracks.length) {
-                    const idx = node.outputs.length;
-                    node.addOutput(`SSG_${idx}`, "*");
-                }
-                while (node.outputs.length > record.tracks.length) {
-                    node.removeOutput(node.outputs.length - 1);
-                }
-
-                node.outputs.forEach((out, idx) => {
-                    const track = record.tracks[idx];
-                    if (track) {
-                        out.name = `SSG_${idx}`;
-                        out.label = track.name || `SSG_${idx}`;
-                        out.type = track.type || "*";
-                    }
-                });
-
-                node.size = [SSG_DEFAULT_WIDTH, Math.max(100, (node.outputs.length * 20) + 70)];
-                if (node.graph) node.graph.setDirtyCanvas(true, true);
-            }
-        );
-
-        node._ssgRefreshDropdown();
-
-        setTimeout(() => {
-            forceNetworkUpdate(app);
-            if (node.graph) node.graph.setDirtyCanvas(true, true);
-        }, 50);
-    };
-
-    const origOnRemoved = nodeType.prototype.onRemoved;
-    nodeType.prototype.onRemoved = function () {
-        if (origOnRemoved) origOnRemoved.apply(this, arguments);
-        setTimeout(() => {
-            forceNetworkUpdate(app);
-        }, 30);
-    };
-
-    const origOnDrawForeground = nodeType.prototype.onDrawForeground;
-    nodeType.prototype.onDrawForeground = function (ctx) {
-        if (origOnDrawForeground) origOnDrawForeground.apply(this, arguments);
-
-        const node = this;
-        applyDynamicShavePass(node);
-
-        const channelWidget = node.widgets?.find(w => w.name === "channel");
-        const rawChannel = (channelWidget?.value || "").trim();
-        const record = getChannelRecord(rawChannel);
-
-        let activeTier = DIAGNOSTIC_TIERS.TIER_0_NOMINAL;
-        const boundChannel = node.properties?.bound_channel || node._ssgBoundChannel || "";
-        const boundGen = node.properties?.bound_generation ?? node._ssgBoundGeneration ?? 0;
-        const isChannelMismatch = rawChannel !== boundChannel;
-        const isSlotMismatch = record && node.outputs && node.outputs.length !== record.tracks.length;
-
-        if (!rawChannel || rawChannel === "Unavailable") {
-            activeTier = DIAGNOSTIC_TIERS.TIER_3_RED;
-        } else if (rawChannel === "Available" || record?.is_editing || isChannelMismatch || boundGen === 0) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_1_YELLOW;
-        } else if (!record || record.generation !== boundGen || isSlotMismatch) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_2_ORANGE;
-        }
-
-        drawSSGWarningOutline(node, ctx, activeTier);
-
-        if (node.flags?.collapsed) {
-            const cleanName = sanitizeAndTruncateText(rawChannel || "NONE", 16);
-            const activeCount = node.outputs?.length || 0;
-            const customTitle = node.title !== "Relay" && node.title !== "SSG Smart Gate Relay" ? ` - ${node.title}` : "";
-            const badgeLabel = `RELAY: ${cleanName}${customTitle} [${activeCount} Trk]`;
-
-            drawMasterGlobalTooltip(node, ctx, app, badgeLabel);
-        }
-    };
-}
-
-export function setupSmartGateReturn(nodeType, nodeData, app) {
-    const origClone = nodeType.prototype.clone;
-    nodeType.prototype.clone = function () {
-        const clonedNode = origClone ? origClone.apply(this, arguments) : null;
-        if (clonedNode) {
-            clonedNode.properties = clonedNode.properties || {};
-            clonedNode.properties.bound_channel = "";
-            clonedNode.properties.bound_generation = 0;
-            clonedNode.properties.return_manifest = "";
-            clonedNode.properties.channel_id = "";
-            clonedNode._ssgBoundGeneration = 0;
-            clonedNode._ssgBoundChannel = "";
-
-            while (clonedNode.inputs && clonedNode.inputs.length > 0) {
-                clonedNode.removeInput(0);
-            }
-            clonedNode.inputs = [];
-
-            if (clonedNode._ssgRefreshDropdown) clonedNode._ssgRefreshDropdown();
-        }
-        return clonedNode;
-    };
-
-    const origOnConfigure = nodeType.prototype.onConfigure;
-    nodeType.prototype.onConfigure = function (info) {
-        syncIncomingProperties(this, info);
-
-        if (origOnConfigure) origOnConfigure.apply(this, arguments);
-
-        const node = this;
-        node.properties = node.properties || {};
-
-        node._ssgBoundGeneration = node.properties.bound_generation || 0;
-        node._ssgBoundChannel = node.properties.bound_channel || "";
-
-        let savedTracks = [];
-        try {
-            savedTracks = JSON.parse(node.properties.return_manifest || "[]");
-        } catch (e) {
-            savedTracks = [];
-        }
-
-        while (node.outputs && node.outputs.length > 0) {
-            node.removeOutput(0);
-        }
-        node.outputs = [];
-
-        let trackInputs = getTrackInputs(node);
-        while (trackInputs.length < savedTracks.length) {
-            const idx = trackInputs.length;
-            node.addInput(`SSG_${idx}`, "*");
-            trackInputs = getTrackInputs(node);
-        }
-        while (trackInputs.length > savedTracks.length) {
-            const last = trackInputs[trackInputs.length - 1];
-            node.removeInput(node.inputs.indexOf(last));
-            trackInputs = getTrackInputs(node);
-        }
-
-        trackInputs = getTrackInputs(node);
-        trackInputs.forEach((inp, idx) => {
-            const track = savedTracks[idx];
-            if (track) {
-                inp.name = `SSG_${idx}`;
-                inp.label = track.name || `SSG_${idx}`;
-                inp.type = track.type || "*";
-            }
+        // Slot 0: Native DOM Status Banner Widget
+        const domBannerWidget = createSSGDOMBanner(node, {
+            widgetName: "channel_display",
+            initialText: "CH: Available",
+            initialColor: SSG_COLOR_YELLOW_TOPAZ
         });
 
-        const rawChannel = node.properties.channel_id;
-        if (rawChannel && savedTracks.length > 0) {
-            registerChannel(rawChannel, savedTracks, node._ssgBoundGeneration || 1, false);
-        }
+        node.updateReturnBannerState = function () {
+            const chW = node.widgets?.find(w => w.name === "channel");
+            const targetChan = chW?.value || node.properties?.bound_channel || "Available";
+            const record = getChannelRecord(targetChan);
+            const isBypassed = isChannelBypassed(targetChan);
 
-        node.size = [SSG_DEFAULT_WIDTH, Math.max(100, (savedTracks.length * 20) + 70)];
+            let displayText = `CH: ${targetChan}`;
+            let bannerColor = SSG_COLOR_NOMINAL; // Tier 0 Nominal: Native ComfyUI
 
-        if (node._ssgRefreshDropdown) node._ssgRefreshDropdown();
-        setTimeout(() => {
-            forceNetworkUpdate(app);
-            if (node.graph) node.graph.setDirtyCanvas(true, true);
-        }, 50);
-    };
+            if (targetChan === "Available") {
+                displayText = "CH: Available";
+                bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+            } else if (targetChan === "Unavailable" || !record) {
+                displayText = targetChan === "Unavailable" ? "CH: Unavailable" : `CH: ${targetChan}`;
+                bannerColor = SSG_COLOR_RUBY_RED;
+            } else if (isBypassed) {
+                displayText = "Injection Bypass Detected";
+                bannerColor = SSG_COLOR_MUTED;
+            } else if (record.is_editing) {
+                displayText = `CH: ${targetChan} [Edit Mode]`;
+                bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+            } else {
+                const retInputs = node.inputs?.filter(inp => inp && inp.type !== -1 && inp.widget === undefined) || [];
+                const isTrackMismatch = record.tracks && (retInputs.length !== record.tracks.length);
+                const isGenMismatch = record.generation !== node._ssgBoundGeneration;
 
-    const origOnNodeCreated = nodeType.prototype.onNodeCreated;
-    nodeType.prototype.onNodeCreated = function () {
-        if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
-
-        const node = this;
-        node.size = [SSG_DEFAULT_WIDTH, 100];
-        node.properties = node.properties || {};
-        node.properties.bound_generation = node.properties.bound_generation || 0;
-        node.properties.bound_channel = node.properties.bound_channel || "";
-        node._ssgBoundGeneration = node.properties.bound_generation;
-        node._ssgBoundChannel = node.properties.bound_channel;
-
-        while (node.outputs && node.outputs.length > 0) {
-            node.removeOutput(0);
-        }
-        node.outputs = [];
-
-        let trackInputs = getTrackInputs(node);
-        while (trackInputs.length > 0) {
-            const last = trackInputs[trackInputs.length - 1];
-            node.removeInput(node.inputs.indexOf(last));
-            trackInputs = getTrackInputs(node);
-        }
-
-        let channelWidget = node.widgets?.find(w => w.name === "channel");
-        if (!channelWidget) {
-            channelWidget = node.addWidget("combo", "channel", "Unavailable", (val) => {
-                const cleanVal = (val || "").trim();
-                if (cleanVal !== "Available" && cleanVal !== "Unavailable") {
-                    node.properties.channel_id = cleanVal;
-                }
-                if (node.graph) node.graph.setDirtyCanvas(true, true);
-            }, { values: ["Unavailable"] });
-        }
-
-        if (channelWidget) {
-            const origMouse = channelWidget.mouse;
-            channelWidget.mouse = function() {
-                if (typeof node._ssgRefreshDropdown === "function") {
-                    node._ssgRefreshDropdown();
-                }
-                if (origMouse) return origMouse.apply(this, arguments);
-            };
-        }
-        
-        node._ssgRefreshDropdown = function () {
-            if (!channelWidget) return;
-            const currentSelected = (channelWidget.value || "").trim();
-
-            const activeRxChannels = [];
-            const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
-
-            for (const n of allNodes) {
-                if (n && n.type === "SSGSmartGate") {
-                    const val = n.properties?.channel_id;
-                    if (val) activeRxChannels.push(`${val}_RX`);
+                if (retInputs.length === 0 || isTrackMismatch) {
+                    displayText = `CH: ${targetChan} [Sync Required]`;
+                    bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+                } else if (retInputs.some(i => i.link === null || i.link === undefined)) {
+                    displayText = `CH: ${targetChan} [Unlinked]`;
+                    bannerColor = SSG_COLOR_FIRE_OPAL;
+                } else if (isGenMismatch) {
+                    displayText = `CH: ${targetChan} [Desync]`;
+                    bannerColor = SSG_COLOR_YELLOW_TOPAZ;
                 }
             }
 
-            for (const chan in window.SSG_PipeRegistry) {
-                if (chan.endsWith("_RX") && !activeRxChannels.includes(chan)) {
-                    activeRxChannels.push(chan);
-                }
-            }
-
-            if (activeRxChannels.length === 0) {
-                channelWidget.options.values = ["Unavailable"];
-                if (node.properties.bound_channel) {
-                    channelWidget.value = node.properties.bound_channel;
-                } else {
-                    channelWidget.value = "Unavailable";
-                    node.properties.channel_id = "";
-                }
-                return;
-            }
-
-            const menuOptions = ["Available", ...activeRxChannels];
-            channelWidget.options.values = menuOptions;
-
-            if (currentSelected && activeRxChannels.includes(currentSelected)) {
-                channelWidget.value = currentSelected;
-                node.properties.channel_id = currentSelected;
-            } else if (node.properties.bound_channel && activeRxChannels.includes(node.properties.bound_channel)) {
-                channelWidget.value = node.properties.bound_channel;
-                node.properties.channel_id = node.properties.bound_channel;
-            } else if (!currentSelected || currentSelected === "Unavailable" || currentSelected === "Default") {
-                channelWidget.value = "Available";
-                node.properties.channel_id = "";
+            if (typeof node.updateSSGBanner === "function") {
+                node.updateSSGBanner(displayText, bannerColor);
             }
         };
 
-        node.addWidget(
-            "button",
-            "[ Sync Tracks ]",
-            null,
-            () => {
-                const rawChannel = (channelWidget.value || "").trim();
-                if (!rawChannel || rawChannel === "Available" || rawChannel === "Unavailable") {
-                    return;
-                }
+        function syncReturnTracks() {
+            const chW = node.widgets?.find(w => w.name === "channel");
+            const targetChannel = chW?.value;
+            if (!targetChannel || targetChannel === "Available" || targetChannel === "Unavailable") return;
 
-                const gateBaseName = rawChannel.replace(/_RX$/, "");
-                const txRecord = getChannelRecord(`${gateBaseName}_TX`);
+            const record = getChannelRecord(targetChannel);
+            if (!record || !record.tracks) return;
 
-                if (!txRecord || !txRecord.tracks || txRecord.tracks.length === 0) {
-                    return;
-                }
-
-                node.properties.channel_id = rawChannel;
-                node.properties.bound_channel = rawChannel;
-                node.properties.bound_generation = txRecord.generation;
-                node.properties.return_manifest = JSON.stringify(txRecord.tracks);
-                node._ssgBoundGeneration = txRecord.generation;
-                node._ssgBoundChannel = rawChannel;
-
-                let trackInputs = getTrackInputs(node);
-                while (trackInputs.length < txRecord.tracks.length) {
-                    const idx = trackInputs.length;
-                    node.addInput(`SSG_${idx}`, "*");
-                    trackInputs = getTrackInputs(node);
-                }
-                while (trackInputs.length > txRecord.tracks.length) {
-                    const last = trackInputs[trackInputs.length - 1];
-                    node.removeInput(node.inputs.indexOf(last));
-                    trackInputs = getTrackInputs(node);
-                }
-
-                trackInputs = getTrackInputs(node);
-                trackInputs.forEach((inp, idx) => {
-                    const track = txRecord.tracks[idx];
-                    if (track) {
-                        inp.name = `SSG_${idx}`;
-                        inp.label = track.name || `SSG_${idx}`;
-                        inp.type = track.type || "*";
+            const existingLinksMap = new Map();
+            if (node.inputs) {
+                node.inputs.forEach(inp => {
+                    if (inp.link !== null && inp.link !== undefined) {
+                        const key = inp._trackIdx !== undefined ? inp._trackIdx : inp.name;
+                        existingLinksMap.set(key, inp.link);
                     }
                 });
-
-                registerChannel(rawChannel, txRecord.tracks, txRecord.generation, false);
-                node.size = [SSG_DEFAULT_WIDTH, Math.max(100, (trackInputs.length * 20) + 70)];
-                
-                forceNetworkUpdate(app);
-                if (node.graph) node.graph.setDirtyCanvas(true, true);
             }
-        );
 
-        node._ssgRefreshDropdown();
+            node.inputs = [];
 
-        setTimeout(() => {
+            record.tracks.forEach((track, idx) => {
+                const cleanName = sanitizeAndTruncateText(track.name, 16);
+                const cleanType = track.type || "*";
+
+                node.addInput(cleanName, cleanType);
+                const newSlot = node.inputs[idx];
+                newSlot._trackIdx = track.index !== undefined ? track.index : idx;
+
+                const savedLink = existingLinksMap.get(newSlot._trackIdx) || existingLinksMap.get(cleanName);
+                if (savedLink !== undefined) {
+                    newSlot.link = savedLink;
+                    const graphLink = getGraphLink(app, node, savedLink);
+                    if (graphLink) {
+                        graphLink.target_slot = idx;
+                    }
+                }
+            });
+
+            node._ssgBoundGeneration = record.generation;
+            node._ssgBoundChannel = targetChannel;
+            node.properties.bound_generation = record.generation;
+            node.properties.bound_channel = targetChannel;
+
+            node.properties.return_manifest = record.tracks.map(track => ({
+                index: track.index,
+                name: track.name,
+                type: track.type
+            }));
+
+            const targetHeight = Math.max(80, (node.inputs.length * 20) + 95);
+            updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
+
+            node.updateReturnBannerState();
+            node.setDirtyCanvas(true, true);
+
+            // Notify Master Gate immediately
+            const cleanBase = targetChannel.replace(/_RX$/, "");
+            const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
+            const masterGate = allNodes.find(n => n && n.type === "SSGSmartGate" && (n.properties?.channel_id === cleanBase || n.widgets?.find(w => w.name === "channel_name")?.value?.trim() === cleanBase));
+            if (masterGate) {
+                if (typeof masterGate.updateGateBannerState === "function") {
+                    masterGate.updateGateBannerState();
+                }
+                masterGate.setDirtyCanvas(true, true);
+            }
+
             forceNetworkUpdate(app);
-            if (node.graph) node.graph.setDirtyCanvas(true, true);
-        }, 50);
-    };
-
-    const origOnRemoved = nodeType.prototype.onRemoved;
-    nodeType.prototype.onRemoved = function () {
-        if (origOnRemoved) origOnRemoved.apply(this, arguments);
-        const node = this;
-        const chanId = node.properties?.channel_id;
-        if (chanId && window.SSG_PipeRegistry && window.SSG_PipeRegistry[chanId]) {
-            delete window.SSG_PipeRegistry[chanId];
         }
-        setTimeout(() => {
+
+        // Slot 1: Native Action Button
+        const syncButton = {
+            type: "button",
+            name: "[ Sync Tracks ]",
+            label: "[ Sync Tracks ]",
+            value: null,
+            callback: () => {
+                syncReturnTracks();
+                if (typeof node.onWidgetChanged === "function") {
+                    node.onWidgetChanged(syncButton.name, syncButton.value, null, syncButton);
+                }
+            }
+        };
+
+        // Slot 2: Channel Dropdown Combo
+        if (!channelWidget) {
+            channelWidget = node.addWidget("combo", "channel", "Available", (v) => {
+                const clean = (v || "").trim();
+                if (clean !== "Available" && clean !== "Unavailable") {
+                    node.properties.bound_channel = clean;
+                    node._ssgBoundChannel = clean;
+                }
+                refreshGateDropdown(node, app, "_RX");
+                node.updateReturnBannerState();
+                if (node.graph) node.graph.setDirtyCanvas(true, true);
+                forceNetworkUpdate(app);
+            }, { values: ["Available"] });
+        } else {
+            const origCallback = channelWidget.callback;
+            channelWidget.callback = function (v) {
+                const clean = (v || "").trim();
+                if (clean !== "Available" && clean !== "Unavailable") {
+                    node.properties.bound_channel = clean;
+                    node._ssgBoundChannel = clean;
+                }
+                refreshGateDropdown(node, app, "_RX");
+                node.updateReturnBannerState();
+                if (origCallback) origCallback.apply(this, arguments);
+                if (node.graph) node.graph.setDirtyCanvas(true, true);
+                forceNetworkUpdate(app);
+            };
+        }
+
+        node.onConnectionsChange = function () {
+            node.updateReturnBannerState();
+            const cleanBase = (node.properties?.bound_channel || "").replace(/_RX$/, "");
+            if (cleanBase) {
+                const allNodes = app?.graph ? getAllGraphNodes(app.graph) : [];
+                const masterGate = allNodes.find(n => n && n.type === "SSGSmartGate" && (n.properties?.channel_id === cleanBase || n.widgets?.find(w => w.name === "channel_name")?.value?.trim() === cleanBase));
+                if (masterGate) {
+                    if (typeof masterGate.updateGateBannerState === "function") {
+                        masterGate.updateGateBannerState();
+                    }
+                    masterGate.setDirtyCanvas(true, true);
+                }
+            }
             forceNetworkUpdate(app);
-        }, 30);
+        };
+
+        node._ssgRefreshDropdown = () => {
+            refreshGateDropdown(node, app, "_RX");
+            node.updateReturnBannerState();
+        };
+
+        // Deterministic Slot Assembly: [Slot 0: Banner, Slot 1: Button, Slot 2: Channel, ...Remaining]
+        const remainingWidgets = (node.widgets || []).filter(
+            w => w !== domBannerWidget && w !== syncButton && w !== channelWidget
+        );
+        node.widgets = [domBannerWidget, syncButton, channelWidget, ...remainingWidgets].filter(Boolean);
+
+        refreshGateDropdown(node, app, "_RX");
+        node.updateReturnBannerState();
+        updateNodeBounds(node, SSG_DEFAULT_WIDTH, 100);
     };
 
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;
     nodeType.prototype.onDrawForeground = function (ctx) {
         if (origOnDrawForeground) origOnDrawForeground.apply(this, arguments);
-
-        const node = this;
-        applyDynamicShavePass(node);
-
-        const channelWidget = node.widgets?.find(w => w.name === "channel");
-        const rawChannel = (channelWidget?.value || "").trim();
-        const gateBaseName = rawChannel.replace(/_RX$/, "");
-        const txRecord = getChannelRecord(`${gateBaseName}_TX`);
-        const trackInputs = getTrackInputs(node);
-
-        let activeTier = DIAGNOSTIC_TIERS.TIER_0_NOMINAL;
-        const boundChannel = node.properties?.bound_channel || node._ssgBoundChannel || "";
-        const boundGen = node.properties?.bound_generation ?? node._ssgBoundGeneration ?? 0;
-        const isChannelMismatch = rawChannel !== boundChannel;
-        const isSlotMismatch = txRecord && trackInputs.length !== txRecord.tracks.length;
-        const hasBrokenInputLink = trackInputs.length > 0 && trackInputs.some(i => i.link === null || i.link === undefined);
-
-        if (!rawChannel || rawChannel === "Unavailable") {
-            activeTier = DIAGNOSTIC_TIERS.TIER_3_RED;
-        } else if (rawChannel === "Available" || txRecord?.is_editing || isChannelMismatch || boundGen === 0) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_1_YELLOW;
-        } else if (!txRecord || txRecord.generation !== boundGen || isSlotMismatch || hasBrokenInputLink) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_2_ORANGE;
-        }
-
-        drawSSGWarningOutline(node, ctx, activeTier);
-
-        if (node.flags?.collapsed) {
-            const cleanName = sanitizeAndTruncateText(rawChannel || "NONE", 16);
-            const activeCount = trackInputs.filter(i => i.link !== null && i.link !== undefined).length || 0;
-            const customTitle = node.title !== "Return" && node.title !== "SSG Smart Gate Return" ? ` - ${node.title}` : "";
-            const badgeLabel = `RETURN: ${cleanName}${customTitle} [${activeCount} Trk]`;
-
-            drawMasterGlobalTooltip(node, ctx, app, badgeLabel);
-        }
     };
 }

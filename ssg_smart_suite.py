@@ -1,7 +1,8 @@
 # ==========================================================================
-# SSG CUSTOM NODE ECOSYSTEM (V2 ARCHITECTURE)
+# SSG CUSTOM NODE ECOSYSTEM (V4 ARCHITECTURE)
 # Designation: SgtSauv & Gemini (Joint Architecture)
 # Status: 9-Core Smart Suite Engine ➔ DATA BUS, ROUTING, MEMORY & TRANSCEIVERS
+# File: ssg_smart_suite.py
 # ==========================================================================
 
 import json
@@ -19,9 +20,8 @@ if not hasattr(torch, "_ssg_module_registry"):
 
 
 class SSGSmartPipe:
-    DESCRIPTION = """
-Master multi-track wireless transmitter.
-"""
+    DESCRIPTION = ""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -51,7 +51,8 @@ Master multi-track wireless transmitter.
 
 
 class SSGSmartSatellite:
-    DESCRIPTION = """Multi-track static wireless receiver bus."""
+    DESCRIPTION = ""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -84,25 +85,30 @@ class SSGSmartSatellite:
 
 
 class SSGSmartGate:
-    DESCRIPTION = """Master inline injection loop valve."""
+    DESCRIPTION = ""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "injection_loop": ("BOOLEAN", {"default": False}),
+                "injection_loop": ("BOOLEAN", {"default": False, "label_off": "Off", "label_on": "On"}),
             },
             "hidden": {
                 "gate_manifest": ("STRING", {"default": ""}),
                 "schema_generation": ("INT", {"default": 0}),
             },
             "optional": {
-                **{f"SSG_{i}": ("*",) for i in range(24)}
+                **{f"SSG_{i}": ("*", {"lazy": True}) for i in range(24)}
             }
         }
 
     @classmethod
     def VALIDATE_INPUTS(cls, **kwargs):
         return True
+
+    def check_lazy_status(self, injection_loop, gate_manifest="", schema_generation=0, **kwargs):
+        needed = [f"SSG_{i}" for i in range(24) if kwargs.get(f"SSG_{i}") is None and f"SSG_{i}" in kwargs]
+        return needed
 
     RETURN_TYPES = tuple(["*"] * 24)
     RETURN_NAMES = tuple([f"◦" for _ in range(24)])
@@ -130,7 +136,8 @@ class SSGSmartGate:
 
 
 class SSGSmartGateRelay:
-    DESCRIPTION = """Dedicated consumer placed at the start of an injection loop."""
+    DESCRIPTION = ""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -163,7 +170,8 @@ class SSGSmartGateRelay:
 
 
 class SSGSmartGateReturn:
-    DESCRIPTION = """Dedicated transmitter placed at the end of an injection loop."""
+    DESCRIPTION = ""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -197,26 +205,38 @@ class SSGSmartGateReturn:
 
 
 class SSGSmartRouter:
-    DESCRIPTION = """High-speed crossbar selector for A/B data comparisons."""
+    DESCRIPTION = ""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "router_switch": (["Bank A", "Bank B"], {"default": "Bank A"}),
+                "router_switch": ("BOOLEAN", {"default": False, "label_off": "Bank A", "label_on": "Bank B"}),
             },
             "hidden": {
                 "router_manifest": ("STRING", {"default": ""}),
                 "schema_generation": ("INT", {"default": 0}),
             },
             "optional": {
-                **{f"SSG_{i}_A": ("*",) for i in range(12)},
-                **{f"SSG_{i}_B": ("*",) for i in range(12)},
+                **{f"SSG_{i}_A": ("*", {"lazy": True}) for i in range(12)},
+                **{f"SSG_{i}_B": ("*", {"lazy": True}) for i in range(12)},
             }
         }
 
     @classmethod
     def VALIDATE_INPUTS(cls, **kwargs):
         return True
+
+    def check_lazy_status(self, router_switch, router_manifest="", schema_generation=0, **kwargs):
+        is_bank_b = (router_switch is True) or (router_switch in ["Bank B", "B", "1", 1])
+        active_suffix = "_B" if is_bank_b else "_A"
+
+        needed = []
+        for i in range(12):
+            input_name = f"SSG_{i}{active_suffix}"
+            if input_name in kwargs and kwargs.get(input_name) is None:
+                needed.append(input_name)
+        return needed
 
     RETURN_TYPES = tuple(["*"] * 12)
     RETURN_NAMES = tuple([f"◦" for _ in range(12)])
@@ -225,20 +245,25 @@ class SSGSmartRouter:
 
     def route_signal_banks(self, router_switch, router_manifest="", schema_generation=0, **kwargs):
         channel_name = kwargs.get("channel_id", "SSG_Orphan_Router")
-        active_suffix = "_A" if router_switch == "Bank A" else "_B"
+        
+        # Coerce boolean or legacy string serializations
+        is_bank_b = (router_switch is True) or (router_switch in ["Bank B", "B", "1", 1])
+        active_suffix = "_B" if is_bank_b else "_A"
+        
         payload = [kwargs.get(f"SSG_{i}{active_suffix}", None) for i in range(12)]
         torch._ssg_piperegistry[channel_name] = payload
         return tuple(payload)
 
 
 class SSGSmartVault:
-    DESCRIPTION = """Inline RAM/VRAM cache vault & upstream severer."""
+    DESCRIPTION = ""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
             "required": {
-                "flush_switch": ("BOOLEAN", {"default": True}),
-                "cache_switch": ("BOOLEAN", {"default": False}),
+                "flush_switch": ("BOOLEAN", {"default": True, "label_off": "Flush Off", "label_on": "Flush On"}),
+                "cache_switch": ("BOOLEAN", {"default": False, "label_off": "Live Pass", "label_on": "Playback"}),
             },
             "hidden": {
                 "vault_manifest": ("STRING", {"default": ""}),
@@ -246,13 +271,22 @@ class SSGSmartVault:
                 "vault_id": ("STRING", {"default": ""}),
             },
             "optional": {
-                **{f"SSG_{i}": ("*",) for i in range(24)}
+                **{f"SSG_{i}": ("*", {"lazy": True}) for i in range(24)}
             }
         }
 
     @classmethod
     def VALIDATE_INPUTS(cls, **kwargs):
         return True
+
+    def check_lazy_status(self, flush_switch, cache_switch, vault_manifest="", schema_generation=0, vault_id="", **kwargs):
+        if cache_switch:
+            # Playback Mode: Completely sever upstream evaluation
+            return []
+
+        # Live Pass Mode: Request any wired upstream inputs that have not yet evaluated
+        needed = [f"SSG_{i}" for i in range(24) if kwargs.get(f"SSG_{i}") is None and f"SSG_{i}" in kwargs]
+        return needed
 
     RETURN_TYPES = tuple(["*"] * 24)
     RETURN_NAMES = tuple([f"◦" for _ in range(24)])
@@ -265,6 +299,12 @@ class SSGSmartVault:
         effective_flush = False if cache_switch else flush_switch
 
         if cache_switch:
+            if channel_name not in torch._ssg_vault_registry:
+                raise RuntimeError(
+                    f"[SSG Smart Vault] No cached tensor data found in registry for channel '{channel_name}'. "
+                    f"Disable 'cache_switch' and run a recording pass with 'flush_switch' enabled first."
+                )
+
             cached_data = torch._ssg_vault_registry.get(channel_name, [None] * 24)
             if len(cached_data) < 24:
                 cached_data = list(cached_data) + [None] * (24 - len(cached_data))
@@ -279,7 +319,8 @@ class SSGSmartVault:
 
 
 class SSGSmartTag:
-    DESCRIPTION = """Inline namer and wildcard type-caster."""
+    DESCRIPTION = ""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
@@ -303,13 +344,12 @@ class SSGSmartTag:
 
 
 class SSGSmartSocket:
-    DESCRIPTION = """Universal plug-n-play transceiver."""
+    DESCRIPTION = ""
+
     @classmethod
     def INPUT_TYPES(cls):
         return {
-            "required": {
-                "bypass": ("BOOLEAN", {"default": False}),
-            },
+            "required": {},
             "hidden": {
                 "socket_manifest": ("STRING", {"default": ""}),
                 "module_id": ("STRING", {"default": ""}),
@@ -329,36 +369,8 @@ class SSGSmartSocket:
     FUNCTION = "process_socket_pipeline"
     CATEGORY = "SSG Network Logic"
 
-    def process_socket_pipeline(self, bypass=False, socket_manifest="", module_id="", schema_generation=0, **kwargs):
-        manifest_data = {}
-        if socket_manifest:
-            try:
-                manifest_data = json.loads(socket_manifest)
-            except Exception:
-                manifest_data = {}
-
-        outputs_spec = manifest_data.get("outputs", [])
-        inputs_spec = manifest_data.get("inputs", [])
-
-        input_name_to_idx = {spec.get("name", f"SSG_{i}"): i for i, spec in enumerate(inputs_spec)}
-
-        resolved_outputs = [None] * 24
-
-        if bypass:
-            for out_idx, out_def in enumerate(outputs_spec):
-                if out_idx >= 24:
-                    break
-                fallback_key = out_def.get("fallback", None)
-                if fallback_key and fallback_key in input_name_to_idx:
-                    src_idx = input_name_to_idx[fallback_key]
-                    resolved_outputs[out_idx] = kwargs.get(f"SSG_{src_idx}", None)
-                else:
-                    resolved_outputs[out_idx] = None
-            return tuple(resolved_outputs)
-
-        for i in range(24):
-            resolved_outputs[i] = kwargs.get(f"SSG_{i}", None)
-
+    def process_socket_pipeline(self, socket_manifest="", module_id="", schema_generation=0, **kwargs):
+        resolved_outputs = [kwargs.get(f"SSG_{i}", None) for i in range(24)]
         return tuple(resolved_outputs)
 
 

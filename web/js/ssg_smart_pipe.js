@@ -1,23 +1,22 @@
 // ==========================================================================
-// SSG CUSTOM NODE ECOSYSTEM (V2 ARCHITECTURE)
+// SSG CUSTOM NODE ECOSYSTEM (V4 ARCHITECTURE)
 // Module: SSG Smart Pipe (Master Multi-Track Broadcaster)
 // File: /web/js/ssg_smart_pipe.js
 // ==========================================================================
 
 import {
     SSG_DEFAULT_WIDTH,
-    AW_BLUE,
-    DIAGNOSTIC_TIERS,
-    sanitizeAndTruncateText,
-    applyDynamicShavePass,
-    drawSSGWarningOutline,
-    drawMasterGlobalTooltip,
+    SSG_COLOR_YELLOW_TOPAZ,
+    SSG_COLOR_MUTED,
     findTrueUpstreamAnchor,
     registerChannel,
+    isChannelBypassed,
     forceNetworkUpdate,
     syncIncomingProperties,
-    getAllGraphNodes
+    getAllGraphNodes,
+    updateNodeBounds
 } from "./ssg_core_utils.js";
+import { createSSGDOMBanner, SSG_COLOR_NOMINAL } from "./ssg_dom_banner.js";
 
 function getGraphLink(app, node, linkId) {
     if (linkId == null) return null;
@@ -70,16 +69,6 @@ function getNextSequentialPipeName(app, currentNode) {
         }
     }
 
-    const registryKeys = Object.keys(window.SSG_PipeRegistry || {});
-    for (const key of registryKeys) {
-        if (key.startsWith(basePrefix)) {
-            const num = parseInt(key.substring(basePrefix.length), 10);
-            if (!isNaN(num) && num > highestIndex) {
-                highestIndex = num;
-            }
-        }
-    }
-
     return `${basePrefix}${highestIndex + 1}`;
 }
 
@@ -113,7 +102,11 @@ export function setupSmartPipe(nodeType, nodeData, app) {
         if (node.properties.is_locked) {
             node._isEditMode = false;
             const lockBtn = node.widgets?.find(w => w.name === "[ Lock Schema ]" || w.name === "[ Edit Schema ]");
-            if (lockBtn) lockBtn.name = "[ Edit Schema ]";
+            if (lockBtn) {
+                lockBtn.name = "[ Edit Schema ]";
+                lockBtn.label = "[ Edit Schema ]";
+                lockBtn.triggerDraw?.();
+            }
 
             let savedTracks = [];
             try {
@@ -130,6 +123,7 @@ export function setupSmartPipe(nodeType, nodeData, app) {
             while (node.inputs && node.inputs.length < savedTracks.length) {
                 const idx = node.inputs.length;
                 node.addInput(`SSG_${idx}`, "*");
+                node.inputs[idx].label = "◦";
             }
             while (node.inputs && node.inputs.length > savedTracks.length) {
                 node.removeInput(node.inputs.length - 1);
@@ -149,15 +143,20 @@ export function setupSmartPipe(nodeType, nodeData, app) {
             node.properties.pipe_manifest = JSON.stringify(savedTracks);
 
             if (channelName && savedTracks.length > 0) {
-                registerChannel(channelName, savedTracks, genW?.value || 1, false);
+                registerChannel(channelName, savedTracks, genW?.value || 1, false, false);
             }
 
-            node.size = [SSG_DEFAULT_WIDTH, Math.max(100, (node.inputs ? node.inputs.length * 20 : 0) + 70)];
+            const targetHeight = Math.max(100, (node.inputs ? node.inputs.length * 20 : 0) + 70);
+            updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
         } else {
             node._isEditMode = true;
             if (node.refreshSlotLayout) {
                 node.refreshSlotLayout();
             }
+        }
+
+        if (typeof node.updatePipeBannerState === "function") {
+            node.updatePipeBannerState();
         }
 
         setTimeout(() => {
@@ -171,7 +170,6 @@ export function setupSmartPipe(nodeType, nodeData, app) {
         if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
 
         const node = this;
-        node.size = [SSG_DEFAULT_WIDTH, 120];
         node.properties = node.properties || {};
         node.properties.is_locked = false;
         node._isEditMode = true;
@@ -197,139 +195,146 @@ export function setupSmartPipe(nodeType, nodeData, app) {
             node.inputs[0].type = "*";
         }
 
-        // --- READ-ONLY NATIVE CHANNEL BANNER WIDGET ---
-        const channelDisplayWidget = node.addWidget(
-            "custom",
-            "channel_display",
-            null,
-            () => {},
-            { serialize: false }
-        );
+        // Slot 0: Native DOM Status Banner Widget
+        const domBannerWidget = createSSGDOMBanner(node, {
+            widgetName: "channel_display",
+            initialText: `CH: ${node.properties.channel_id} [Edit Mode]`,
+            initialColor: SSG_COLOR_YELLOW_TOPAZ
+        });
 
-        channelDisplayWidget.draw = function (ctx, nodeRef, widgetWidth, y, widgetHeight) {
-            const chanId = nodeRef.properties?.channel_id || "UNASSIGNED";
-            const margin = 10;
-            const drawWidth = widgetWidth - (margin * 2);
-            const drawHeight = 22;
+        node.updatePipeBannerState = function () {
+            const chanId = node.properties?.channel_id || "UNASSIGNED";
+            const isBypassed = isChannelBypassed(chanId);
 
-            ctx.save();
-            ctx.fillStyle = "rgba(15, 18, 22, 0.85)";
-            ctx.strokeStyle = "rgba(0, 229, 255, 0.35)";
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.roundRect(margin, y, drawWidth, drawHeight, [4]);
-            ctx.fill();
-            ctx.stroke();
+            let displayText = `CH: ${chanId}`;
+            let bannerColor = SSG_COLOR_NOMINAL; // Tier 0 Nominal: Native ComfyUI
 
-            ctx.font = "bold 11px 'Courier New', monospace";
-            ctx.fillStyle = AW_BLUE;
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.fillText(`CH: ${chanId}`, margin + (drawWidth / 2), y + (drawHeight / 2));
-            ctx.restore();
+            if (isBypassed) {
+                displayText = "Injection Bypass Detected";
+                bannerColor = SSG_COLOR_MUTED;
+            } else if (node._isEditMode) {
+                displayText = `CH: ${chanId} [Edit Mode]`;
+                bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+            }
+
+            if (typeof node.updateSSGBanner === "function") {
+                node.updateSSGBanner(displayText, bannerColor);
+            }
         };
-
-        channelDisplayWidget.computeSize = function () {
-            return [SSG_DEFAULT_WIDTH, 26];
-        };
-        // ----------------------------------------------
 
         const genWidget = node.widgets?.find(w => w.name === "schema_generation");
 
         node.refreshSlotLayout = function () {
-            while (node.outputs && node.outputs.length > 0) {
-                node.removeOutput(0);
-            }
+            if (node._isRefreshingSlots) return;
+            node._isRefreshingSlots = true;
 
-            const channelName = node.properties.channel_id;
-
-            if (node._isEditMode) {
-                const connectedCount = node.inputs?.filter(i => i.link !== null && i.link !== undefined).length || 0;
-                const targetCount = Math.min(24, connectedCount + 1);
-
-                while (node.inputs.length < targetCount) {
-                    const idx = node.inputs.length;
-                    node.addInput(`SSG_${idx}`, "*");
-                    node.inputs[idx].label = "◦";
-                }
-                while (node.inputs.length > targetCount && (node.inputs[node.inputs.length - 1].link === null || node.inputs[node.inputs.length - 1].link === undefined)) {
-                    node.removeInput(node.inputs.length - 1);
+            try {
+                while (node.outputs && node.outputs.length > 0) {
+                    node.removeOutput(0);
                 }
 
-                const currentTracks = [];
-                node.inputs.forEach((input, idx) => {
-                    input.name = `SSG_${idx}`;
-                    if (input.link !== null && input.link !== undefined) {
-                        const link = getGraphLink(app, node, input.link);
-                        if (link) {
-                            const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-                            input.label = resolved.name;
-                            input.type = resolved.type;
-                            currentTracks.push({ index: idx, name: resolved.name, type: resolved.type });
-                        }
-                    } else {
-                        input.label = "◦";
-                        input.type = "*";
+                const channelName = node.properties.channel_id;
+
+                if (node._isEditMode) {
+                    const connectedCount = node.inputs?.filter(i => i.link !== null && i.link !== undefined).length || 0;
+                    const targetCount = Math.min(24, connectedCount + 1);
+
+                    while (node.inputs.length < targetCount) {
+                        const idx = node.inputs.length;
+                        node.addInput(`SSG_${idx}`, "*");
+                        node.inputs[idx].label = "◦";
                     }
-                });
-
-                node.properties.pipe_manifest = JSON.stringify(currentTracks);
-
-                if (channelName) {
-                    registerChannel(channelName, currentTracks, genWidget?.value || 1, true);
-                }
-            } else {
-                let savedTracks = [];
-                try {
-                    savedTracks = JSON.parse(node.properties.pipe_manifest || "[]");
-                } catch (e) {
-                    savedTracks = [];
-                }
-
-                const targetCount = savedTracks.length;
-
-                while (node.inputs.length < targetCount) {
-                    const idx = node.inputs.length;
-                    node.addInput(`SSG_${idx}`, "*");
-                }
-
-                while (node.inputs.length > targetCount) {
-                    node.removeInput(node.inputs.length - 1);
-                }
-
-                const currentTracks = [];
-                node.inputs.forEach((input, idx) => {
-                    input.name = `SSG_${idx}`;
-                    if (input.link !== null && input.link !== undefined) {
-                        const link = getGraphLink(app, node, input.link);
-                        if (link) {
-                            const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-                            input.label = resolved.name;
-                            input.type = resolved.type;
-                        }
+                    while (node.inputs.length > targetCount && (node.inputs[node.inputs.length - 1].link === null || node.inputs[node.inputs.length - 1].link === undefined)) {
+                        node.removeInput(node.inputs.length - 1);
                     }
-                    currentTracks.push({ index: idx, name: input.label || input.name, type: input.type });
-                });
 
-                node.properties.pipe_manifest = JSON.stringify(currentTracks);
+                    const currentTracks = [];
+                    node.inputs.forEach((input, idx) => {
+                        input.name = `SSG_${idx}`;
+                        if (input.link !== null && input.link !== undefined) {
+                            const link = getGraphLink(app, node, input.link);
+                            if (link) {
+                                const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
+                                input.label = resolved.name;
+                                input.type = resolved.type;
+                                currentTracks.push({ index: idx, name: resolved.name, type: resolved.type });
+                            }
+                        } else {
+                            input.label = "◦";
+                            input.type = "*";
+                        }
+                    });
 
-                if (channelName) {
-                    registerChannel(channelName, currentTracks, genWidget?.value || 1, false);
+                    node.properties.pipe_manifest = JSON.stringify(currentTracks);
+
+                    if (channelName) {
+                        registerChannel(channelName, currentTracks, genWidget?.value || 1, true, false);
+                    }
+                } else {
+                    let savedTracks = [];
+                    try {
+                        savedTracks = JSON.parse(node.properties.pipe_manifest || "[]");
+                    } catch (e) {
+                        savedTracks = [];
+                    }
+
+                    const targetCount = savedTracks.length;
+
+                    while (node.inputs.length < targetCount) {
+                        const idx = node.inputs.length;
+                        node.addInput(`SSG_${idx}`, "*");
+                        node.inputs[idx].label = "◦";
+                    }
+
+                    while (node.inputs.length > targetCount) {
+                        node.removeInput(node.inputs.length - 1);
+                    }
+
+                    const currentTracks = [];
+                    node.inputs.forEach((input, idx) => {
+                        input.name = `SSG_${idx}`;
+                        if (input.link !== null && input.link !== undefined) {
+                            const link = getGraphLink(app, node, input.link);
+                            if (link) {
+                                const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
+                                input.label = resolved.name;
+                                input.type = resolved.type;
+                            }
+                        }
+                        currentTracks.push({ index: idx, name: input.label || input.name, type: input.type });
+                    });
+
+                    node.properties.pipe_manifest = JSON.stringify(currentTracks);
+
+                    if (channelName) {
+                        registerChannel(channelName, currentTracks, genWidget?.value || 1, false, false);
+                    }
                 }
-            }
 
-            node.size = [SSG_DEFAULT_WIDTH, Math.max(100, (node.inputs.length * 20) + 70)];
-            if (node.graph) node.graph.setDirtyCanvas(true, true);
+                const targetHeight = Math.max(100, (node.inputs.length * 20) + 70);
+                updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
+                node.updatePipeBannerState();
+            } finally {
+                node._isRefreshingSlots = false;
+            }
         };
 
-        const lockButton = node.addWidget(
-            "button",
-            node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
-            null,
-            () => {
+        const lockButton = {
+            type: "button",
+            name: node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
+            label: node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
+            value: null,
+            callback: () => {
                 node._isEditMode = !node._isEditMode;
                 node.properties.is_locked = !node._isEditMode;
-                lockButton.name = node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]";
+
+                const nextLabel = node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]";
+                lockButton.name = nextLabel;
+                lockButton.label = nextLabel;
+
+                if (typeof node.onWidgetChanged === "function") {
+                    node.onWidgetChanged(lockButton.name, lockButton.value, null, lockButton);
+                }
 
                 if (!node._isEditMode) {
                     for (let i = node.inputs.length - 1; i >= 0; i--) {
@@ -360,22 +365,50 @@ export function setupSmartPipe(nodeType, nodeData, app) {
 
                     const channelName = node.properties.channel_id;
                     if (channelName) {
-                        registerChannel(channelName, currentTracks, genWidget?.value || 1, false);
+                        registerChannel(channelName, currentTracks, genWidget?.value || 1, false, false);
                     }
                 }
 
                 node.refreshSlotLayout();
+                node.updatePipeBannerState();
+
+                lockButton.triggerDraw?.();
+                node.setDirtyCanvas(true, true);
+
+                if (node.graph) {
+                    node.graph._version = (node.graph._version || 0) + 1;
+                    if (typeof node.graph.change === "function") {
+                        node.graph.change();
+                    }
+                }
+                app.canvas?.setDirty(true, true);
+
+                if (typeof app.canvas?.draw === "function") {
+                    app.canvas.draw(true, true);
+                }
+                requestAnimationFrame(() => {
+                    app.canvas?.draw?.(true, true);
+                });
+
                 forceNetworkUpdate(app);
             }
+        };
+
+        const remainingWidgets = (node.widgets || []).filter(
+            w => w !== domBannerWidget && w !== lockButton
         );
+        node.widgets = [domBannerWidget, lockButton, ...remainingWidgets].filter(Boolean);
 
         node.onConnectionsChange = function () {
             if (node._isEditMode) {
                 node.refreshSlotLayout();
             }
+            node.updatePipeBannerState();
         };
 
         node.refreshSlotLayout();
+        node.updatePipeBannerState();
+        updateNodeBounds(node, SSG_DEFAULT_WIDTH, 120);
 
         setTimeout(() => {
             forceNetworkUpdate(app);
@@ -402,69 +435,5 @@ export function setupSmartPipe(nodeType, nodeData, app) {
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;
     nodeType.prototype.onDrawForeground = function (ctx) {
         if (origOnDrawForeground) origOnDrawForeground.apply(this, arguments);
-
-        const node = this;
-        applyDynamicShavePass(node);
-
-        const channelName = node.properties.channel_id;
-
-        let activeTier = DIAGNOSTIC_TIERS.TIER_0_NOMINAL;
-        const hasBrokenLockedLink = !node._isEditMode && node.inputs && node.inputs.length > 0 && node.inputs.some(i => i.link === null || i.link === undefined);
-
-        let hasTypeMismatch = false;
-        let hasNameMismatch = false;
-
-        if (!node._isEditMode && node.inputs && node.inputs.length > 0) {
-            let savedTracks = [];
-            try {
-                savedTracks = JSON.parse(node.properties.pipe_manifest || "[]");
-            } catch (e) {
-                savedTracks = [];
-            }
-
-            for (let i = 0; i < node.inputs.length; i++) {
-                const input = node.inputs[i];
-                const manifestTrack = savedTracks[i];
-
-                if (input.link !== null && input.link !== undefined && manifestTrack) {
-                    const link = getGraphLink(app, node, input.link);
-                    if (link) {
-                        const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-                        
-                        const expectedType = manifestTrack.type || "*";
-                        const actualType = resolved.type || "*";
-                        if (expectedType !== "*" && actualType !== "*" && expectedType !== actualType) {
-                            hasTypeMismatch = true;
-                        }
-
-                        const expectedName = manifestTrack.name || `SSG_${i}`;
-                        const actualName = resolved.name || "◦";
-                        if (expectedName !== actualName) {
-                            hasNameMismatch = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!channelName) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_3_RED;
-        } else if (hasBrokenLockedLink || hasTypeMismatch) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_2_ORANGE;
-        } else if (node._isEditMode || hasNameMismatch) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_1_YELLOW;
-        }
-
-        drawSSGWarningOutline(node, ctx, activeTier);
-
-        if (node.flags?.collapsed) {
-            const cleanName = sanitizeAndTruncateText(channelName || "ERROR", 16);
-            const activeCount = node.inputs?.filter(i => i.link !== null && i.link !== undefined).length || 0;
-            const modeState = node._isEditMode ? "EDIT" : "LOCKED";
-            const customTitle = node.title !== "Pipe" && node.title !== "SSG Smart Pipe" ? ` - ${node.title}` : "";
-            const badgeLabel = `TX: ${cleanName}${customTitle} [${activeCount} Trk | ${modeState}]`;
-
-            drawMasterGlobalTooltip(node, ctx, app, badgeLabel);
-        }
     };
 }

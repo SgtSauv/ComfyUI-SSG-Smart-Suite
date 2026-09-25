@@ -1,19 +1,21 @@
 // ==========================================================================
-// SSG CUSTOM NODE ECOSYSTEM (V2 ARCHITECTURE)
+// SSG CUSTOM NODE ECOSYSTEM (V4 ARCHITECTURE)
 // Module: SSG Smart Tag (Boundary Namer & Type Normalizer)
 // File: /web/js/ssg_smart_tag.js
 // ==========================================================================
 
 import {
     SSG_DEFAULT_WIDTH,
-    DIAGNOSTIC_TIERS,
+    SSG_COLOR_YELLOW_TOPAZ,
+    SSG_COLOR_FIRE_OPAL,
     sanitizeAndTruncateText,
-    applyDynamicShavePass,
-    drawSSGWarningOutline,
-    drawMasterGlobalTooltip,
     findTrueUpstreamAnchor,
-    findGraphAndNode
+    findGraphAndNode,
+    syncIncomingProperties,
+    updateNodeBounds,
+    forceNetworkUpdate
 } from "./ssg_core_utils.js";
+import { createSSGDOMBanner, SSG_COLOR_NOMINAL } from "./ssg_dom_banner.js";
 
 /**
  * Multi-layer graph link finder supporting subgraphs, local graphs, and root graph maps.
@@ -98,20 +100,50 @@ function notifyDownstreamTargets(app, tagNode) {
 }
 
 export function setupSmartTag(nodeType, nodeData, app) {
+    const origOnConfigure = nodeType.prototype.onConfigure;
+    nodeType.prototype.onConfigure = function (info) {
+        syncIncomingProperties(this, info);
+
+        if (origOnConfigure) origOnConfigure.apply(this, arguments);
+
+        const node = this;
+        node.properties = node.properties || {};
+
+        if (typeof node.updateTagSlotState === "function") {
+            node.updateTagSlotState();
+        }
+
+        updateNodeBounds(node, SSG_DEFAULT_WIDTH, 110);
+
+        // Phase 2 Deserialization Guard: Wait for LiteGraph to populate graph.links
+        setTimeout(() => {
+            if (typeof node.updateTagSlotState === "function") {
+                node.updateTagSlotState();
+            }
+            notifyDownstreamTargets(app, node);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        }, 60);
+    };
+
     const origOnNodeCreated = nodeType.prototype.onNodeCreated;
     nodeType.prototype.onNodeCreated = function () {
         if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
 
         const node = this;
+        node.properties = node.properties || {};
 
-        // 1. Structural Baseline
-        node.size = [SSG_DEFAULT_WIDTH, 60];
-        node._ssgOriginalTitle = "SSG Smart Tag";
-
-        // 2. Widget References & Validation
-        const tagWidget = node.widgets?.find(w => w.name === "tag_name");
+        // Extract pre-instantiated widgets created by ComfyUI core
+        const tagWidget = node.widgets?.find(w => w.name === "tag_name" || w.name === "tag");
         const typeWidget = node.widgets?.find(w => w.name === "type_override");
 
+        // Slot 0: Native DOM Status Banner Widget
+        const domBannerWidget = createSSGDOMBanner(node, {
+            widgetName: "channel_display",
+            initialText: "Tag : *",
+            initialColor: SSG_COLOR_YELLOW_TOPAZ
+        });
+
+        // Slot 1 & 2: Parameter Controls Bindings
         if (tagWidget) {
             const origCallback = tagWidget.callback;
             tagWidget.callback = function (v) {
@@ -119,13 +151,16 @@ export function setupSmartTag(nodeType, nodeData, app) {
                 if (clean !== v) {
                     tagWidget.value = clean;
                 }
+                node.properties.tag_name = clean;
                 if (node.outputs?.[0]) {
                     node.outputs[0].name = clean || "◦";
                 }
                 if (origCallback) origCallback.apply(this, arguments);
-                
+
+                if (node.updateTagSlotState) node.updateTagSlotState();
                 notifyDownstreamTargets(app, node);
                 if (node.graph) node.graph.setDirtyCanvas(true, true);
+                forceNetworkUpdate(app);
             };
         }
 
@@ -137,78 +172,88 @@ export function setupSmartTag(nodeType, nodeData, app) {
 
                 notifyDownstreamTargets(app, node);
                 if (node.graph) node.graph.setDirtyCanvas(true, true);
+                forceNetworkUpdate(app);
             };
         }
 
-        // 3. Dynamic Type Latching & Validation
+        // Dynamic Type Latching & Validation Engine (Synchronous Single Source of Truth)
         node.updateTagSlotState = function () {
-            const linkId = node.inputs?.[0]?.link;
+            const inp = node.inputs?.[0];
+            const out = node.outputs?.[0];
             const overrideType = typeWidget?.value || "AUTO";
+            const linkId = inp?.link;
 
-            if (linkId !== null && linkId !== undefined) {
+            let upstreamType = "*";
+            let hasCollision = false;
+            const isConnected = linkId !== null && linkId !== undefined;
+
+            if (isConnected) {
                 const link = getGraphLink(app, node, linkId);
                 if (link) {
                     const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
+                    upstreamType = resolved.type || "*";
 
                     if (tagWidget && (!tagWidget.value || tagWidget.value === "Tag_1" || tagWidget.value === "Tag")) {
-                        tagWidget.value = sanitizeAndTruncateText(resolved.name || "Tag", 16);
+                        const cleanResolvedName = sanitizeAndTruncateText(resolved.name || "Tag", 16);
+                        tagWidget.value = cleanResolvedName;
+                        node.properties.tag_name = cleanResolvedName;
                     }
-
-                    if (node.outputs?.[0]) {
-                        node.outputs[0].type = overrideType === "AUTO" ? (resolved.type || "*") : overrideType;
-                        node.outputs[0].name = tagWidget?.value || resolved.name || "◦";
-                    }
-                }
-            } else {
-                if (node.outputs?.[0]) {
-                    node.outputs[0].type = overrideType === "AUTO" ? "*" : overrideType;
-                    node.outputs[0].name = tagWidget?.value || "◦";
                 }
             }
+
+            let resolvedType = "*";
+            if (overrideType && overrideType !== "AUTO" && overrideType !== "*") {
+                resolvedType = overrideType;
+                if (upstreamType !== "*" && overrideType !== upstreamType) {
+                    hasCollision = true;
+                }
+            } else {
+                resolvedType = upstreamType;
+            }
+
+            const cleanName = sanitizeAndTruncateText(tagWidget?.value || node.properties?.tag_name || "Tag", 12);
+            const cleanType = sanitizeAndTruncateText(resolvedType || "*", 10);
+            const displayText = `${cleanName} : ${cleanType}`;
+
+            let bannerColor = SSG_COLOR_NOMINAL;
+            if (hasCollision) {
+                bannerColor = SSG_COLOR_FIRE_OPAL;
+            } else if (!isConnected || (cleanType === "*" && overrideType === "AUTO")) {
+                bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+            } else {
+                bannerColor = SSG_COLOR_NOMINAL;
+            }
+
+            if (inp) inp.type = resolvedType;
+            if (out) {
+                out.type = resolvedType;
+                out.name = tagWidget?.value || "◦";
+            }
+
+            // Direct synchronous repaint of the native DOM Status Banner
+            if (typeof node.updateSSGBanner === "function") {
+                node.updateSSGBanner(displayText, bannerColor);
+            }
         };
+
+        // Deterministic Slot Assembly: [Slot 0: DOM Banner, Slot 1: Tag Name, Slot 2: Type Override, ...Remaining]
+        const remainingWidgets = (node.widgets || []).filter(
+            w => w !== domBannerWidget && w !== tagWidget && w !== typeWidget
+        );
+        node.widgets = [domBannerWidget, tagWidget, typeWidget, ...remainingWidgets].filter(Boolean);
 
         node.onConnectionsChange = function () {
             node.updateTagSlotState();
             notifyDownstreamTargets(app, node);
+            forceNetworkUpdate(app);
         };
+
+        node.updateTagSlotState();
+        updateNodeBounds(node, SSG_DEFAULT_WIDTH, 110);
     };
 
-    // 4. Canvas Draw Pass: Outline Diagnostics, Shave Pass, & Collapsed Mini-Bar HUD
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;
     nodeType.prototype.onDrawForeground = function (ctx) {
         if (origOnDrawForeground) origOnDrawForeground.apply(this, arguments);
-
-        const node = this;
-
-        // A. Shave Pass ("SSG Smart Tag" -> "Tag" when collapsed)
-        applyDynamicShavePass(node);
-
-        // B. Diagnostic Telemetry (Tier 2 Orange if forced override creates collision)
-        let activeTier = DIAGNOSTIC_TIERS.TIER_0_NOMINAL;
-        const typeWidget = node.widgets?.find(w => w.name === "type_override");
-        const tagWidget = node.widgets?.find(w => w.name === "tag_name");
-
-        if (node.inputs?.[0]?.link) {
-            const link = getGraphLink(app, node, node.inputs[0].link);
-            if (link) {
-                const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-                const overrideType = typeWidget?.value;
-
-                if (overrideType && overrideType !== "AUTO" && overrideType !== "*" && resolved.type && resolved.type !== "*") {
-                    if (overrideType !== resolved.type) {
-                        activeTier = DIAGNOSTIC_TIERS.TIER_2_ORANGE;
-                    }
-                }
-            }
-        }
-        drawSSGWarningOutline(node, ctx, activeTier);
-
-        // C. Collapsed Mini-Bar HUD Overlay (Left-Anchored Alienware Blue Badge)
-        if (node.flags?.collapsed) {
-            const tagName = sanitizeAndTruncateText(tagWidget?.value || "Tag", 16);
-            const tagType = typeWidget?.value || "AUTO";
-            const badgeLabel = `Tag: ${tagName} [${tagType}]`;
-            drawMasterGlobalTooltip(node, ctx, app, badgeLabel);
-        }
     };
 }

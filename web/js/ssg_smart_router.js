@@ -1,23 +1,29 @@
 // ==========================================================================
-// SSG CUSTOM NODE ECOSYSTEM (V2 ARCHITECTURE)
-// Module: SSG Smart Router (A/B Crossbar Multi-Track Broadcaster)
+// SSG CUSTOM NODE ECOSYSTEM (V4 ARCHITECTURE)
+// Module: SSG Smart Router (Dual-Bank A/B Multi-Track Broadcaster)
 // File: /web/js/ssg_smart_router.js
 // ==========================================================================
 
 import {
     SSG_DEFAULT_WIDTH,
-    AW_BLUE,
-    DIAGNOSTIC_TIERS,
-    sanitizeAndTruncateText,
-    applyDynamicShavePass,
-    drawSSGWarningOutline,
-    drawMasterGlobalTooltip,
+    SSG_COLOR_ICE_BLUE,
+    SSG_COLOR_YELLOW_TOPAZ,
+    SSG_COLOR_RUBY_RED,
+    SSG_COLOR_MUTED,
     findTrueUpstreamAnchor,
+    findGraphAndNode,
     registerChannel,
+    isChannelBypassed,
     forceNetworkUpdate,
     syncIncomingProperties,
-    getAllGraphNodes
+    getAllGraphNodes,
+    updateNodeBounds
 } from "./ssg_core_utils.js";
+import { createSSGDOMBanner, SSG_COLOR_NOMINAL } from "./ssg_dom_banner.js";
+
+function isRouterBankB(val) {
+    return val === true || val === "Bank B" || val === "B" || val === 1 || val === "1";
+}
 
 function getGraphLink(app, node, linkId) {
     if (linkId == null) return null;
@@ -52,6 +58,55 @@ function getGraphLink(app, node, linkId) {
     return null;
 }
 
+/**
+ * Anti-LoRA Intercept Sniffer:
+ * Traverses upstream through any active router input connections and reroute chains.
+ * If an SSGLoraLoader is detected upstream of the Router before prompt encoding,
+ * flags an illegal architectural intercept.
+ */
+function checkUpstreamIllegalLoRA(app, node) {
+    if (!node.inputs || node.inputs.length === 0) return false;
+
+    for (const input of node.inputs) {
+        if (input.link !== null && input.link !== undefined) {
+            const link = getGraphLink(app, node, input.link);
+            if (link && link.origin_id != null) {
+                const search = findGraphAndNode(app, node, link.origin_id);
+                if (search && search.node) {
+                    let current = search.node;
+                    const visited = new Set();
+
+                    // Trace through recursive intermediate Reroutes to true anchor
+                    while (current && current.type === "Reroute" && !visited.has(current)) {
+                        visited.add(current);
+                        const rLink = current.inputs?.[0]?.link;
+                        if (rLink !== null && rLink !== undefined) {
+                            const upLink = getGraphLink(app, current, rLink);
+                            if (upLink && upLink.origin_id != null) {
+                                const upSearch = findGraphAndNode(app, current, upLink.origin_id);
+                                current = upSearch ? upSearch.node : null;
+                            } else {
+                                current = null;
+                            }
+                        } else {
+                            current = null;
+                        }
+                    }
+
+                    if (current) {
+                        const candidateType = current.type || current.comfyClass || "";
+                        if (candidateType === "SSGLoraLoader" || candidateType === "SSG_LoraLoader") {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return false;
+}
+
 function getNextSequentialRouterName(app, currentNode) {
     const basePrefix = "SSG_Router_";
     let highestIndex = 0;
@@ -70,22 +125,7 @@ function getNextSequentialRouterName(app, currentNode) {
         }
     }
 
-    const registryKeys = Object.keys(window.SSG_PipeRegistry || {});
-    for (const key of registryKeys) {
-        if (key.startsWith(basePrefix)) {
-            const num = parseInt(key.substring(basePrefix.length), 10);
-            if (!isNaN(num) && num > highestIndex) {
-                highestIndex = num;
-            }
-        }
-    }
-
     return `${basePrefix}${highestIndex + 1}`;
-}
-
-function getTrackInputs(node) {
-    if (!node.inputs) return [];
-    return node.inputs.filter(inp => inp.name && inp.name.startsWith("SSG_"));
 }
 
 export function setupSmartRouter(nodeType, nodeData, app) {
@@ -118,7 +158,11 @@ export function setupSmartRouter(nodeType, nodeData, app) {
         if (node.properties.is_locked) {
             node._isEditMode = false;
             const lockBtn = node.widgets?.find(w => w.name === "[ Lock Schema ]" || w.name === "[ Edit Schema ]");
-            if (lockBtn) lockBtn.name = "[ Edit Schema ]";
+            if (lockBtn) {
+                lockBtn.name = "[ Edit Schema ]";
+                lockBtn.label = "[ Edit Schema ]";
+                lockBtn.triggerDraw?.();
+            }
 
             let savedTracks = [];
             try {
@@ -127,57 +171,57 @@ export function setupSmartRouter(nodeType, nodeData, app) {
                 savedTracks = [];
             }
 
-            const targetPairs = Math.max(1, savedTracks.length);
-            const targetSlots = targetPairs * 2;
-
             while (node.outputs && node.outputs.length > 0) {
                 node.removeOutput(0);
             }
             node.outputs = [];
 
-            let trackInputs = getTrackInputs(node);
-            while (trackInputs.length < targetSlots) {
-                const pairIdx = Math.floor(trackInputs.length / 2);
-                node.addInput(`SSG_${pairIdx}_A`, "*");
-                node.addInput(`SSG_${pairIdx}_B`, "*");
-                trackInputs = getTrackInputs(node);
+            const totalSlots = savedTracks.length * 2;
+            while (node.inputs && node.inputs.length < totalSlots) {
+                const idx = node.inputs.length;
+                node.addInput(`Slot_${idx}`, "*");
             }
-            while (trackInputs.length > targetSlots) {
-                const last = trackInputs[trackInputs.length - 1];
-                node.removeInput(node.inputs.indexOf(last));
-                trackInputs = getTrackInputs(node);
+            while (node.inputs && node.inputs.length > totalSlots) {
+                node.removeInput(node.inputs.length - 1);
             }
 
-            trackInputs = getTrackInputs(node);
-            for (let i = 0; i < targetPairs; i++) {
-                const inpA = trackInputs[i * 2];
-                const inpB = trackInputs[(i * 2) + 1];
-                const track = savedTracks[i];
+            if (node.inputs) {
+                savedTracks.forEach((track, i) => {
+                    const idxA = i * 2;
+                    const idxB = (i * 2) + 1;
+                    const cleanName = track.name || `Track_${i}`;
+                    const cleanType = track.type || "*";
 
-                if (inpA) {
-                    inpA.name = `SSG_${i}_A`;
-                    inpA.label = track ? `A${i}: ${track.name}` : `A${i}: ◦`;
-                    inpA.type = track ? (track.type || "*") : "*";
-                }
-                if (inpB) {
-                    inpB.name = `SSG_${i}_B`;
-                    inpB.label = track ? `B${i}: ${track.name}` : `B${i}: ◦`;
-                    inpB.type = track ? (track.type || "*") : "*";
-                }
+                    if (node.inputs[idxA]) {
+                        node.inputs[idxA].name = `SSG_${i}_A`;
+                        node.inputs[idxA].label = `${cleanName} (A)`;
+                        node.inputs[idxA].type = cleanType;
+                    }
+                    if (node.inputs[idxB]) {
+                        node.inputs[idxB].name = `SSG_${i}_B`;
+                        node.inputs[idxB].label = `${cleanName} (B)`;
+                        node.inputs[idxB].type = cleanType;
+                    }
+                });
             }
 
             node.properties.router_manifest = JSON.stringify(savedTracks);
 
             if (channelName && savedTracks.length > 0) {
-                registerChannel(channelName, savedTracks, genW?.value || 1, false);
+                registerChannel(channelName, savedTracks, genW?.value || 1, false, false);
             }
 
-            node.size = [SSG_DEFAULT_WIDTH, Math.max(120, (trackInputs.length * 20) + 90)];
+            const targetHeight = Math.max(120, (savedTracks.length * 40) + 115);
+            updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
         } else {
             node._isEditMode = true;
             if (node.refreshSlotLayout) {
                 node.refreshSlotLayout();
             }
+        }
+
+        if (typeof node.updateRouterBannerState === "function") {
+            node.updateRouterBannerState();
         }
 
         setTimeout(() => {
@@ -191,7 +235,6 @@ export function setupSmartRouter(nodeType, nodeData, app) {
         if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
 
         const node = this;
-        node.size = [SSG_DEFAULT_WIDTH, 140];
         node.properties = node.properties || {};
         node.properties.is_locked = false;
         node._isEditMode = true;
@@ -207,236 +250,150 @@ export function setupSmartRouter(nodeType, nodeData, app) {
         while (node.outputs && node.outputs.length > 0) {
             node.removeOutput(0);
         }
-        node.outputs = [];
 
-        let trackInputs = getTrackInputs(node);
-        while (trackInputs.length > 2) {
-            const last = trackInputs[trackInputs.length - 1];
-            node.removeInput(node.inputs.indexOf(last));
-            trackInputs = getTrackInputs(node);
+        while (node.inputs && node.inputs.length > 2) {
+            node.removeInput(node.inputs.length - 1);
+        }
+        while (node.inputs && node.inputs.length < 2) {
+            node.addInput(`Slot_${node.inputs.length}`, "*");
         }
 
-        if (trackInputs.length === 0) {
-            node.addInput("SSG_0_A", "*");
-            node.addInput("SSG_0_B", "*");
-            trackInputs = getTrackInputs(node);
-        } else if (trackInputs.length === 1) {
-            node.addInput("SSG_0_B", "*");
-            trackInputs = getTrackInputs(node);
-        }
+        node.inputs[0].name = "SSG_0_A";
+        node.inputs[0].label = "Track_0 (A)";
+        node.inputs[0].type = "*";
 
-        trackInputs[0].name = "SSG_0_A";
-        trackInputs[0].label = "A0: ◦";
-        trackInputs[0].type = "*";
+        node.inputs[1].name = "SSG_0_B";
+        node.inputs[1].label = "Track_0 (B)";
+        node.inputs[1].type = "*";
 
-        trackInputs[1].name = "SSG_0_B";
-        trackInputs[1].label = "B0: ◦";
-        trackInputs[1].type = "*";
+        let switchWidget = node.widgets?.find(w => w.name === "router_switch");
 
-        const channelDisplayWidget = node.addWidget(
-            "custom",
-            "channel_display",
-            null,
-            () => {},
-            { serialize: false }
-        );
+        const domBannerWidget = createSSGDOMBanner(node, {
+            widgetName: "channel_display",
+            initialText: `CH: ${node.properties.channel_id} [Edit Mode]`,
+            initialColor: SSG_COLOR_YELLOW_TOPAZ,
+            initialBadge: "[A]",
+            badgeColor: SSG_COLOR_YELLOW_TOPAZ
+        });
 
-        channelDisplayWidget.draw = function (ctx, nodeRef, widgetWidth, y, widgetHeight) {
-            const chanId = nodeRef.properties?.channel_id || "UNASSIGNED";
-            const margin = 10;
-            const drawWidth = widgetWidth - (margin * 2);
-            const drawHeight = 22;
+        node.updateRouterBannerState = function () {
+            const chanId = node.properties?.channel_id || "UNASSIGNED";
+            const swW = node.widgets?.find(w => w.name === "router_switch");
+            const isBankB = isRouterBankB(swW?.value);
+            const isBypassed = isChannelBypassed(chanId);
+            const hasIllegalLoRA = checkUpstreamIllegalLoRA(app, node);
 
-            ctx.save();
-            ctx.fillStyle = "rgba(15, 18, 22, 0.85)";
-            ctx.strokeStyle = "rgba(0, 229, 255, 0.35)";
-            ctx.lineWidth = 1;
-            ctx.beginPath();
-            ctx.roundRect(margin, y, drawWidth, drawHeight, [4]);
-            ctx.fill();
-            ctx.stroke();
+            let displayText = `CH: ${chanId}`;
+            let bannerColor = SSG_COLOR_NOMINAL; // Tier 0 Nominal: Native ComfyUI
+            let subBadge = isBankB ? "[B]" : "[A]";
+            let badgeColor = isBankB ? SSG_COLOR_ICE_BLUE : SSG_COLOR_NOMINAL;
 
-            ctx.font = "bold 11px 'Courier New', monospace";
-            ctx.fillStyle = AW_BLUE;
-            ctx.textAlign = "center";
-            ctx.textBaseline = "middle";
-            ctx.fillText(`CH: ${chanId}`, margin + (drawWidth / 2), y + (drawHeight / 2));
-            ctx.restore();
+            if (hasIllegalLoRA) {
+                // Tier 3 Red Alert: Architectural Lockout
+                displayText = "[ILLEGAL INTERCEPT: ROUTER CANNOT PRECEDE PROMPT ENCODER]";
+                bannerColor = SSG_COLOR_RUBY_RED;
+                subBadge = null;
+                badgeColor = null;
+            } else if (isBypassed) {
+                displayText = "Injection Bypass Detected";
+                bannerColor = SSG_COLOR_MUTED;
+                subBadge = null;
+                badgeColor = null;
+            } else if (node._isEditMode) {
+                displayText = `CH: ${chanId} [Edit Mode]`;
+                bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+                badgeColor = isBankB ? SSG_COLOR_ICE_BLUE : SSG_COLOR_YELLOW_TOPAZ;
+            }
+
+            if (typeof node.updateSSGBanner === "function") {
+                node.updateSSGBanner(displayText, bannerColor, subBadge, badgeColor);
+            }
         };
 
-        channelDisplayWidget.computeSize = function () {
-            return [SSG_DEFAULT_WIDTH, 26];
-        };
-
-        const bankWidget = node.widgets?.find(w => w.name === "router_switch");
         const genWidget = node.widgets?.find(w => w.name === "schema_generation");
 
-        if (bankWidget) {
-            const origBankCallback = bankWidget.callback;
-            bankWidget.callback = function () {
-                if (origBankCallback) origBankCallback.apply(this, arguments);
-                node.refreshSlotLayout();
-                forceNetworkUpdate(app);
-            };
-        }
-
         node.refreshSlotLayout = function () {
-            while (node.outputs && node.outputs.length > 0) {
-                node.removeOutput(0);
-            }
-            node.outputs = [];
+            if (node._isRefreshingSlots) return;
+            node._isRefreshingSlots = true;
 
-            const currentBank = bankWidget?.value || "Bank A";
-            const channelName = node.properties.channel_id;
-            let trackInputs = getTrackInputs(node);
-
-            if (node._isEditMode) {
-                let connectedPairs = 0;
-                const totalPairs = Math.floor(trackInputs.length / 2);
-
-                for (let i = 0; i < totalPairs; i++) {
-                    const inpA = trackInputs[i * 2];
-                    const inpB = trackInputs[(i * 2) + 1];
-                    if ((inpA && inpA.link !== null) || (inpB && inpB.link !== null)) {
-                        connectedPairs = i + 1;
-                    }
+            try {
+                while (node.outputs && node.outputs.length > 0) {
+                    node.removeOutput(0);
                 }
 
-                const targetPairs = Math.min(12, Math.max(1, connectedPairs + 1));
-                const targetSlots = targetPairs * 2;
+                const channelName = node.properties.channel_id;
 
-                while (trackInputs.length < targetSlots) {
-                    const pairIdx = Math.floor(trackInputs.length / 2);
-                    node.addInput(`SSG_${pairIdx}_A`, "*");
-                    node.addInput(`SSG_${pairIdx}_B`, "*");
-                    trackInputs = getTrackInputs(node);
-                }
+                if (node._isEditMode) {
+                    let connectedPairs = 0;
+                    const totalInputs = node.inputs ? node.inputs.length : 0;
+                    const currentTrackCount = Math.floor(totalInputs / 2);
 
-                while (trackInputs.length > targetSlots) {
-                    const last = trackInputs[trackInputs.length - 1];
-                    const secondLast = trackInputs[trackInputs.length - 2];
-                    if (!last.link && !secondLast.link) {
-                        node.removeInput(node.inputs.indexOf(last));
-                        node.removeInput(node.inputs.indexOf(secondLast));
-                        trackInputs = getTrackInputs(node);
-                    } else {
-                        break;
-                    }
-                }
+                    for (let i = 0; i < currentTrackCount; i++) {
+                        const inA = node.inputs[i * 2];
+                        const inB = node.inputs[(i * 2) + 1];
+                        const hasLinkA = inA && inA.link !== null && inA.link !== undefined;
+                        const hasLinkB = inB && inB.link !== null && inB.link !== undefined;
 
-                const tracksA = [];
-                const tracksB = [];
-
-                for (let i = 0; i < Math.floor(trackInputs.length / 2); i++) {
-                    const inpA = trackInputs[i * 2];
-                    const inpB = trackInputs[(i * 2) + 1];
-
-                    inpA.name = `SSG_${i}_A`;
-                    inpB.name = `SSG_${i}_B`;
-
-                    let resolvedA = null;
-                    let resolvedB = null;
-
-                    if (inpA.link !== null) {
-                        const linkA = getGraphLink(app, node, inpA.link);
-                        if (linkA) {
-                            resolvedA = findTrueUpstreamAnchor(app, node, linkA.origin_id, linkA.origin_slot);
-                            inpA.label = `A${i}: ${resolvedA.name}`;
-                            inpA.type = resolvedA.type;
-                            tracksA.push({ index: i, name: resolvedA.name, type: resolvedA.type });
-                        }
-                    } else {
-                        inpA.label = `A${i}: ◦`;
-                    }
-
-                    if (inpB.link !== null) {
-                        const linkB = getGraphLink(app, node, inpB.link);
-                        if (linkB) {
-                            resolvedB = findTrueUpstreamAnchor(app, node, linkB.origin_id, linkB.origin_slot);
-                            inpB.label = `B${i}: ${resolvedB.name}`;
-                            inpB.type = resolvedB.type;
-                            tracksB.push({ index: i, name: resolvedB.name, type: resolvedB.type });
-                        }
-                    } else {
-                        inpB.label = `B${i}: ◦`;
-                    }
-
-                    if (inpA.link !== null && inpB.link === null && resolvedA) {
-                        inpB.type = resolvedA.type;
-                    } else if (inpB.link !== null && inpA.link === null && resolvedB) {
-                        inpA.type = resolvedB.type;
-                    } else if (inpA.link === null && inpB.link === null) {
-                        inpA.type = "*";
-                        inpB.type = "*";
-                    }
-                }
-
-                const activeBroadcastTracks = (currentBank === "Bank A" || currentBank === "A") ? tracksA : tracksB;
-                node.properties.router_manifest = JSON.stringify(activeBroadcastTracks);
-
-                if (channelName) {
-                    registerChannel(channelName, activeBroadcastTracks, genWidget?.value || 1, true);
-                }
-            } else {
-                const tracksA = [];
-                const tracksB = [];
-
-                for (let i = 0; i < Math.floor(trackInputs.length / 2); i++) {
-                    const inpA = trackInputs[i * 2];
-                    const inpB = trackInputs[(i * 2) + 1];
-
-                    inpA.name = `SSG_${i}_A`;
-                    inpB.name = `SSG_${i}_B`;
-
-                    if (inpA.link !== null) {
-                        const linkA = getGraphLink(app, node, inpA.link);
-                        if (linkA) {
-                            const resA = findTrueUpstreamAnchor(app, node, linkA.origin_id, linkA.origin_slot);
-                            inpA.label = `A${i}: ${resA.name}`;
-                            inpA.type = resA.type;
+                        if (hasLinkA || hasLinkB) {
+                            connectedPairs = i + 1;
                         }
                     }
 
-                    if (inpB.link !== null) {
-                        const linkB = getGraphLink(app, node, inpB.link);
-                        if (linkB) {
-                            const resB = findTrueUpstreamAnchor(app, node, linkB.origin_id, linkB.origin_slot);
-                            inpB.label = `B${i}: ${resB.name}`;
-                            inpB.type = resB.type;
-                        }
+                    const targetTrackCount = Math.min(12, connectedPairs + 1);
+                    const targetInputCount = targetTrackCount * 2;
+
+                    while (node.inputs.length < targetInputCount) {
+                        const idx = node.inputs.length;
+                        node.addInput(`Slot_${idx}`, "*");
+                    }
+                    while (node.inputs.length > targetInputCount) {
+                        node.removeInput(node.inputs.length - 1);
                     }
 
-                    const cleanNameA = inpA.label.replace(/^A\d+:\s*/, "");
-                    const cleanNameB = inpB.label.replace(/^B\d+:\s*/, "");
+                    const currentTracks = [];
+                    for (let i = 0; i < targetTrackCount; i++) {
+                        const idxA = i * 2;
+                        const idxB = (i * 2) + 1;
+                        const inA = node.inputs[idxA];
+                        const inB = node.inputs[idxB];
 
-                    tracksA.push({ index: i, name: cleanNameA, type: inpA.type });
-                    tracksB.push({ index: i, name: cleanNameB, type: inpB.type });
-                }
+                        inA.name = `SSG_${i}_A`;
+                        inB.name = `SSG_${i}_B`;
 
-                const activeBroadcastTracks = (currentBank === "Bank A" || currentBank === "A") ? tracksA : tracksB;
-                node.properties.router_manifest = JSON.stringify(activeBroadcastTracks);
+                        let trackName = `Track_${i}`;
+                        let trackType = "*";
 
-                if (channelName) {
-                    registerChannel(channelName, activeBroadcastTracks, genWidget?.value || 1, false);
-                }
-            }
+                        if (inA.link !== null && inA.link !== undefined) {
+                            const link = getGraphLink(app, node, inA.link);
+                            if (link) {
+                                const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
+                                trackName = resolved.name;
+                                trackType = resolved.type;
+                            }
+                        } else if (inB.link !== null && inB.link !== undefined) {
+                            const link = getGraphLink(app, node, inB.link);
+                            if (link) {
+                                const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
+                                trackName = resolved.name;
+                                trackType = resolved.type;
+                            }
+                        }
 
-            node.size = [SSG_DEFAULT_WIDTH, Math.max(120, (trackInputs.length * 20) + 90)];
-            if (node.graph) node.graph.setDirtyCanvas(true, true);
-        };
+                        inA.label = `${trackName} (A)`;
+                        inA.type = trackType;
 
-        const lockButton = node.addWidget(
-            "button",
-            node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
-            null,
-            () => {
-                node._isEditMode = !node._isEditMode;
-                node.properties.is_locked = !node._isEditMode;
-                lockButton.name = node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]";
+                        inB.label = `${trackName} (B)`;
+                        inB.type = trackType;
 
-                let trackInputs = getTrackInputs(node);
+                        currentTracks.push({ index: i, name: trackName, type: trackType });
+                    }
 
-                if (!node._isEditMode) {
+                    node.properties.router_manifest = JSON.stringify(currentTracks);
+
+                    if (channelName) {
+                        registerChannel(channelName, currentTracks, genWidget?.value || 1, true, false);
+                    }
+                } else {
                     let savedTracks = [];
                     try {
                         savedTracks = JSON.parse(node.properties.router_manifest || "[]");
@@ -444,33 +401,111 @@ export function setupSmartRouter(nodeType, nodeData, app) {
                         savedTracks = [];
                     }
 
-                    const targetPairs = savedTracks.length;
-                    const targetSlots = targetPairs * 2;
+                    const targetTrackCount = savedTracks.length;
+                    const targetInputCount = targetTrackCount * 2;
 
-                    while (trackInputs.length < targetSlots) {
-                        const pairIdx = Math.floor(trackInputs.length / 2);
-                        node.addInput(`SSG_${pairIdx}_A`, "*");
-                        node.addInput(`SSG_${pairIdx}_B`, "*");
-                        trackInputs = getTrackInputs(node);
+                    while (node.inputs.length < targetInputCount) {
+                        const idx = node.inputs.length;
+                        node.addInput(`Slot_${idx}`, "*");
+                    }
+                    while (node.inputs.length > targetInputCount) {
+                        node.removeInput(node.inputs.length - 1);
                     }
 
-                    while (trackInputs.length > targetSlots) {
-                        const last = trackInputs[trackInputs.length - 1];
-                        node.removeInput(node.inputs.indexOf(last));
-                        trackInputs = getTrackInputs(node);
+                    savedTracks.forEach((track, i) => {
+                        const idxA = i * 2;
+                        const idxB = (i * 2) + 1;
+                        const inA = node.inputs[idxA];
+                        const inB = node.inputs[idxB];
+
+                        inA.name = `SSG_${i}_A`;
+                        inB.name = `SSG_${i}_B`;
+
+                        inA.label = `${track.name || `Track_${i}`} (A)`;
+                        inA.type = track.type || "*";
+
+                        inB.label = `${track.name || `Track_${i}`} (B)`;
+                        inB.type = track.type || "*";
+                    });
+
+                    node.properties.router_manifest = JSON.stringify(savedTracks);
+
+                    if (channelName) {
+                        registerChannel(channelName, savedTracks, genWidget?.value || 1, false, false);
+                    }
+                }
+
+                const targetHeight = Math.max(120, ((node.inputs.length / 2) * 40) + 115);
+                updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
+                node.updateRouterBannerState();
+            } finally {
+                node._isRefreshingSlots = false;
+            }
+        };
+
+        const lockButton = {
+            type: "button",
+            name: node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
+            label: node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
+            value: null,
+            callback: () => {
+                // Pre-lock illegal LoRA check: Prevent locking if illegal intercept exists
+                if (node._isEditMode && checkUpstreamIllegalLoRA(app, node)) {
+                    node.updateRouterBannerState();
+                    return;
+                }
+
+                node._isEditMode = !node._isEditMode;
+                node.properties.is_locked = !node._isEditMode;
+
+                const nextLabel = node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]";
+                lockButton.name = nextLabel;
+                lockButton.label = nextLabel;
+
+                if (typeof node.onWidgetChanged === "function") {
+                    node.onWidgetChanged(lockButton.name, lockButton.value, null, lockButton);
+                }
+
+                if (!node._isEditMode) {
+                    const totalInputs = node.inputs ? node.inputs.length : 0;
+                    const trackCount = Math.floor(totalInputs / 2);
+                    const validTracks = [];
+
+                    for (let i = 0; i < trackCount; i++) {
+                        const inA = node.inputs[i * 2];
+                        const inB = node.inputs[(i * 2) + 1];
+                        const hasLinkA = inA && inA.link !== null && inA.link !== undefined;
+                        const hasLinkB = inB && inB.link !== null && inB.link !== undefined;
+
+                        if (hasLinkA || hasLinkB) {
+                            let cleanName = `Track_${validTracks.length}`;
+                            let cleanType = "*";
+
+                            if (hasLinkA) {
+                                const link = getGraphLink(app, node, inA.link);
+                                if (link) {
+                                    const res = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
+                                    cleanName = res.name;
+                                    cleanType = res.type;
+                                }
+                            } else if (hasLinkB) {
+                                const link = getGraphLink(app, node, inB.link);
+                                if (link) {
+                                    const res = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
+                                    cleanName = res.name;
+                                    cleanType = res.type;
+                                }
+                            }
+
+                            validTracks.push({
+                                index: validTracks.length,
+                                name: cleanName,
+                                type: cleanType
+                            });
+                        }
                     }
 
-                    const currentBank = bankWidget?.value || "Bank A";
-                    const activeTracks = [];
-
-                    trackInputs = getTrackInputs(node);
-                    for (let i = 0; i < Math.floor(trackInputs.length / 2); i++) {
-                        const inp = (currentBank === "Bank A" || currentBank === "A") ? trackInputs[i * 2] : trackInputs[(i * 2) + 1];
-                        const cleanName = inp.label.replace(/^[AB]\d+:\s*/, "");
-                        activeTracks.push({ index: i, name: cleanName, type: inp.type });
-                    }
-
-                    node.properties.router_manifest = JSON.stringify(activeTracks);
+                    node.properties.router_manifest = JSON.stringify(validTracks);
 
                     if (genWidget) {
                         genWidget.value = (genWidget.value || 0) + 1;
@@ -478,22 +513,79 @@ export function setupSmartRouter(nodeType, nodeData, app) {
 
                     const channelName = node.properties.channel_id;
                     if (channelName) {
-                        registerChannel(channelName, activeTracks, genWidget?.value || 1, false);
+                        registerChannel(channelName, validTracks, genWidget?.value || 1, false, false);
                     }
                 }
 
                 node.refreshSlotLayout();
-                forceNetworkUpdate(app);
-            }
-        );
+                node.updateRouterBannerState();
 
-        node.onConnectionsChange = function (type) {
-            if (node._isEditMode && type === 1) {
-                node.refreshSlotLayout();
+                lockButton.triggerDraw?.();
+                node.setDirtyCanvas(true, true);
+
+                if (node.graph) {
+                    node.graph._version = (node.graph._version || 0) + 1;
+                    if (typeof node.graph.change === "function") {
+                        node.graph.change();
+                    }
+                }
+                app.canvas?.setDirty(true, true);
+
+                if (typeof app.canvas?.draw === "function") {
+                    app.canvas.draw(true, true);
+                }
+                requestAnimationFrame(() => {
+                    app.canvas?.draw?.(true, true);
+                });
+
+                forceNetworkUpdate(app);
             }
         };
 
+        if (!switchWidget) {
+            switchWidget = node.addWidget(
+                "toggle",
+                "router_switch",
+                false,
+                (val) => {
+                    node.updateRouterBannerState();
+                    forceNetworkUpdate(app);
+                    if (node.graph) {
+                        node.graph._version = (node.graph._version || 0) + 1;
+                        node.graph.setDirtyCanvas(true, true);
+                    }
+                },
+                { on: "Bank B", off: "Bank A" }
+            );
+        } else {
+            const origSwitchCb = switchWidget.callback;
+            switchWidget.callback = function (val) {
+                const isBankB = isRouterBankB(val);
+                if (origSwitchCb) origSwitchCb.call(this, isBankB);
+                node.updateRouterBannerState();
+                forceNetworkUpdate(app);
+                if (node.graph) {
+                    node.graph._version = (node.graph._version || 0) + 1;
+                    node.graph.setDirtyCanvas(true, true);
+                }
+            };
+        }
+
+        const remainingWidgets = (node.widgets || []).filter(
+            w => w !== switchWidget && w !== domBannerWidget && w !== lockButton
+        );
+        node.widgets = [domBannerWidget, lockButton, ...remainingWidgets, switchWidget].filter(Boolean);
+
+        node.onConnectionsChange = function () {
+            if (node._isEditMode) {
+                node.refreshSlotLayout();
+            }
+            node.updateRouterBannerState();
+        };
+
         node.refreshSlotLayout();
+        node.updateRouterBannerState();
+        updateNodeBounds(node, SSG_DEFAULT_WIDTH, 140);
 
         setTimeout(() => {
             forceNetworkUpdate(app);
@@ -520,105 +612,5 @@ export function setupSmartRouter(nodeType, nodeData, app) {
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;
     nodeType.prototype.onDrawForeground = function (ctx) {
         if (origOnDrawForeground) origOnDrawForeground.apply(this, arguments);
-
-        const node = this;
-        applyDynamicShavePass(node);
-
-        const channelName = node.properties.channel_id;
-        const trackInputs = getTrackInputs(node);
-
-        let activeTier = DIAGNOSTIC_TIERS.TIER_0_NOMINAL;
-        const bankWidget = node.widgets?.find(w => w.name === "router_switch");
-        const currentBank = bankWidget?.value || "Bank A";
-
-        let hasBrokenLockedLink = false;
-        let hasTypeMismatch = false;
-        let hasNameMismatch = false;
-
-        if (trackInputs.length > 0) {
-            const pairCount = Math.floor(trackInputs.length / 2);
-
-            let savedTracks = [];
-            if (!node._isEditMode) {
-                try {
-                    savedTracks = JSON.parse(node.properties.router_manifest || "[]");
-                } catch (e) {
-                    savedTracks = [];
-                }
-            }
-
-            for (let i = 0; i < pairCount; i++) {
-                const inpA = trackInputs[i * 2];
-                const inpB = trackInputs[(i * 2) + 1];
-
-                let resolvedA = null;
-                let resolvedB = null;
-
-                if (inpA && inpA.link !== null && inpA.link !== undefined) {
-                    const linkA = getGraphLink(app, node, inpA.link);
-                    if (linkA) {
-                        resolvedA = findTrueUpstreamAnchor(app, node, linkA.origin_id, linkA.origin_slot);
-                    }
-                }
-
-                if (inpB && inpB.link !== null && inpB.link !== undefined) {
-                    const linkB = getGraphLink(app, node, inpB.link);
-                    if (linkB) {
-                        resolvedB = findTrueUpstreamAnchor(app, node, linkB.origin_id, linkB.origin_slot);
-                    }
-                }
-
-                const typeA = resolvedA ? (resolvedA.type || "*") : (inpA?.type || "*");
-                const typeB = resolvedB ? (resolvedB.type || "*") : (inpB?.type || "*");
-                if (resolvedA && resolvedB && typeA !== "*" && typeB !== "*" && typeA !== typeB) {
-                    hasTypeMismatch = true;
-                }
-
-                if (!node._isEditMode) {
-                    const isBankA = (currentBank === "Bank A" || currentBank === "A");
-                    const activeSlot = isBankA ? inpA : inpB;
-                    const activeResolved = isBankA ? resolvedA : resolvedB;
-                    const manifestTrack = savedTracks[i];
-
-                    if (activeSlot && (activeSlot.link === null || activeSlot.link === undefined)) {
-                        hasBrokenLockedLink = true;
-                    }
-
-                    if (manifestTrack) {
-                        const expectedType = manifestTrack.type || "*";
-                        const expectedName = manifestTrack.name || `Track_${i}`;
-
-                        if (activeResolved) {
-                            const actualType = activeResolved.type || "*";
-                            if (expectedType !== "*" && actualType !== "*" && expectedType !== actualType) {
-                                hasTypeMismatch = true;
-                            }
-                            if (activeResolved.name && activeResolved.name !== expectedName) {
-                                hasNameMismatch = true;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!channelName) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_3_RED;
-        } else if (hasBrokenLockedLink || hasTypeMismatch) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_2_ORANGE;
-        } else if (node._isEditMode || hasNameMismatch) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_1_YELLOW;
-        }
-        drawSSGWarningOutline(node, ctx, activeTier);
-
-        if (node.flags?.collapsed) {
-            const cleanName = sanitizeAndTruncateText(channelName || "ERROR", 16);
-            const pairCount = Math.floor(trackInputs.length / 2);
-            const modeState = node._isEditMode ? "EDIT" : "LOCKED";
-            const customTitle = node.title !== "Router" && node.title !== "SSG Smart Router" ? ` - ${node.title}` : "";
-            const badgeLabel = `ROUTER: ${cleanName}${customTitle} [${currentBank} | ${pairCount} Pairs | ${modeState}]`;
-
-            drawMasterGlobalTooltip(node, ctx, app, badgeLabel);
-        }
     };
 }

@@ -1,21 +1,25 @@
 // ==========================================================================
-// SSG CUSTOM NODE ECOSYSTEM (V2 ARCHITECTURE)
-// Module: SSG Smart Vault (Master Inline RAM/VRAM Storage & Engine Severer)
+// SSG CUSTOM NODE ECOSYSTEM (V4 ARCHITECTURE)
+// Module: SSG Smart Vault (State-Aware Latent Cache & Multi-Track Store)
 // File: /web/js/ssg_smart_vault.js
 // ==========================================================================
 
 import {
     SSG_DEFAULT_WIDTH,
-    DIAGNOSTIC_TIERS,
-    sanitizeAndTruncateText,
-    applyDynamicShavePass,
-    drawSSGWarningOutline,
-    drawMasterGlobalTooltip,
+    SSG_COLOR_EMERALD_GREEN,
+    SSG_COLOR_ICE_BLUE,
+    SSG_COLOR_YELLOW_TOPAZ,
+    SSG_COLOR_ELECTRIC_PURPLE,
+    SSG_COLOR_MUTED,
     findTrueUpstreamAnchor,
-    syncIncomingProperties,
+    registerChannel,
+    isChannelBypassed,
     forceNetworkUpdate,
-    getAllGraphNodes
+    syncIncomingProperties,
+    getAllGraphNodes,
+    updateNodeBounds
 } from "./ssg_core_utils.js";
+import { createSSGDOMBanner, SSG_COLOR_NOMINAL } from "./ssg_dom_banner.js";
 
 function getGraphLink(app, node, linkId) {
     if (linkId == null) return null;
@@ -67,12 +71,8 @@ function getNextSequentialVaultName(app, currentNode) {
             }
         }
     }
-    return `${basePrefix}${highestIndex + 1}`;
-}
 
-function getTrackInputs(node) {
-    if (!node.inputs) return [];
-    return node.inputs.filter(inp => inp.name && inp.name.startsWith("SSG_"));
+    return `${basePrefix}${highestIndex + 1}`;
 }
 
 export function setupSmartVault(nodeType, nodeData, app) {
@@ -99,16 +99,22 @@ export function setupSmartVault(nodeType, nodeData, app) {
         const node = this;
         node.properties = node.properties || {};
 
-        if (!node.properties.channel_id && node.properties.vault_id) {
+        if (node.properties.vault_id && !node.properties.channel_id) {
             node.properties.channel_id = node.properties.vault_id;
         }
 
+        const genW = node.widgets?.find(w => w.name === "schema_generation");
         const manifestVal = node.properties.vault_manifest;
+        const channelName = node.properties.channel_id;
 
         if (node.properties.is_locked) {
             node._isEditMode = false;
             const lockBtn = node.widgets?.find(w => w.name === "[ Lock Schema ]" || w.name === "[ Edit Schema ]");
-            if (lockBtn) lockBtn.name = "[ Edit Schema ]";
+            if (lockBtn) {
+                lockBtn.name = "[ Edit Schema ]";
+                lockBtn.label = "[ Edit Schema ]";
+                lockBtn.triggerDraw?.();
+            }
 
             let savedTracks = [];
             try {
@@ -117,54 +123,63 @@ export function setupSmartVault(nodeType, nodeData, app) {
                 savedTracks = [];
             }
 
-            const targetSlots = savedTracks.length;
-
-            let trackInputs = getTrackInputs(node);
-            while (trackInputs.length < targetSlots) {
-                const idx = trackInputs.length;
+            while (node.inputs && node.inputs.length < savedTracks.length) {
+                const idx = node.inputs.length;
                 node.addInput(`SSG_${idx}`, "*");
-                trackInputs = getTrackInputs(node);
+                node.inputs[idx].label = "◦";
             }
-            while (trackInputs.length > targetSlots) {
-                const lastTrack = trackInputs[trackInputs.length - 1];
-                const realIdx = node.inputs.indexOf(lastTrack);
-                node.removeInput(realIdx);
-                trackInputs = getTrackInputs(node);
+            while (node.inputs && node.inputs.length > savedTracks.length) {
+                node.removeInput(node.inputs.length - 1);
             }
 
-            while (node.outputs && node.outputs.length < targetSlots) {
+            while (node.outputs && node.outputs.length < savedTracks.length) {
                 const idx = node.outputs.length;
                 node.addOutput(`SSG_${idx}`, "*");
+                node.outputs[idx].label = "◦";
             }
-            while (node.outputs && node.outputs.length > targetSlots) {
+            while (node.outputs && node.outputs.length > savedTracks.length) {
                 node.removeOutput(node.outputs.length - 1);
             }
 
-            trackInputs = getTrackInputs(node);
-            for (let i = 0; i < targetSlots; i++) {
-                const track = savedTracks[i];
-                const inp = trackInputs[i];
-                const out = node.outputs?.[i];
+            if (node.inputs) {
+                node.inputs.forEach((input, idx) => {
+                    const track = savedTracks[idx];
+                    if (track) {
+                        input.name = `SSG_${idx}`;
+                        input.label = track.name || `SSG_${idx}`;
+                        input.type = track.type || "*";
+                    }
+                });
+            }
 
-                if (inp) {
-                    inp.name = `SSG_${i}`;
-                    inp.label = "◦";
-                    inp.type = track ? (track.type || "*") : "*";
-                }
-                if (out) {
-                    out.name = `SSG_${i}`;
-                    out.label = track ? (track.name || `Track_${i}`) : `Track_${i}`;
-                    out.type = track ? (track.type || "*") : "*";
-                }
+            if (node.outputs) {
+                node.outputs.forEach((output, idx) => {
+                    const track = savedTracks[idx];
+                    if (track) {
+                        output.name = `SSG_${idx}`;
+                        output.label = track.name || `SSG_${idx}`;
+                        output.type = track.type || "*";
+                    }
+                });
             }
 
             node.properties.vault_manifest = JSON.stringify(savedTracks);
-            node.size = [SSG_DEFAULT_WIDTH, Math.max(100, (targetSlots * 20) + 90)];
+
+            if (channelName && savedTracks.length > 0) {
+                registerChannel(channelName, savedTracks, genW?.value || 1, false, false);
+            }
+
+            const targetHeight = Math.max(120, (savedTracks.length * 20) + 140);
+            updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
         } else {
             node._isEditMode = true;
             if (node.refreshSlotLayout) {
                 node.refreshSlotLayout();
             }
+        }
+
+        if (typeof node.updateVaultBannerState === "function") {
+            node.updateVaultBannerState();
         }
 
         setTimeout(() => {
@@ -178,254 +193,321 @@ export function setupSmartVault(nodeType, nodeData, app) {
         if (origOnNodeCreated) origOnNodeCreated.apply(this, arguments);
 
         const node = this;
-        node.size = [SSG_DEFAULT_WIDTH, 130];
         node.properties = node.properties || {};
         node.properties.is_locked = false;
         node._isEditMode = true;
 
         if (!node.properties.channel_id) {
             node.properties.channel_id = getNextSequentialVaultName(app, node);
+            node.properties.vault_id = node.properties.channel_id;
         }
-        node.properties.vault_id = node.properties.channel_id;
 
         if (node.properties.vault_manifest === undefined) {
             node.properties.vault_manifest = "";
         }
 
-        let trackInputs = getTrackInputs(node);
-        while (trackInputs.length > 1) {
-            const lastTrack = trackInputs[trackInputs.length - 1];
-            node.removeInput(node.inputs.indexOf(lastTrack));
-            trackInputs = getTrackInputs(node);
+        while (node.inputs && node.inputs.length > 1) {
+            node.removeInput(node.inputs.length - 1);
         }
+        while (node.inputs && node.inputs.length < 1) {
+            node.addInput("SSG_0", "*");
+        }
+        node.inputs[0].name = "SSG_0";
+        node.inputs[0].label = "◦";
+        node.inputs[0].type = "*";
 
         while (node.outputs && node.outputs.length > 1) {
             node.removeOutput(node.outputs.length - 1);
         }
-
-        if (trackInputs.length === 0) {
-            node.addInput("SSG_0", "*");
-            trackInputs = getTrackInputs(node);
-        }
-        if (!node.outputs || node.outputs.length === 0) {
+        while (node.outputs && node.outputs.length < 1) {
             node.addOutput("SSG_0", "*");
         }
-
-        trackInputs[0].name = "SSG_0";
-        trackInputs[0].label = "◦";
-        trackInputs[0].type = "*";
-
         node.outputs[0].name = "SSG_0";
         node.outputs[0].label = "◦";
         node.outputs[0].type = "*";
 
-        // Mutex switch callbacks
-        const flushWidget = node.widgets?.find(w => w.name === "flush_switch");
-        const cacheWidget = node.widgets?.find(w => w.name === "cache_switch");
+        let flushWidget = node.widgets?.find(w => w.name === "flush_switch");
+        let cacheWidget = node.widgets?.find(w => w.name === "cache_switch");
+        // Slot 0: Native DOM Status Banner Widget
+        const domBannerWidget = createSSGDOMBanner(node, {
+            widgetName: "channel_display",
+            initialText: `CH: ${node.properties.channel_id} [Edit Mode]`,
+            initialColor: SSG_COLOR_YELLOW_TOPAZ
+        });
 
-        if (cacheWidget) {
-            const origCacheCb = cacheWidget.callback;
-            cacheWidget.callback = function (val) {
-                if (origCacheCb) origCacheCb.apply(this, arguments);
-                if (val === true && flushWidget) {
-                    flushWidget.value = false;
-                }
-                forceNetworkUpdate(app);
-                if (node.graph) node.graph.setDirtyCanvas(true, true);
-            };
-        }
+        node.updateVaultBannerState = function () {
+            const chanId = node.properties?.channel_id || "UNASSIGNED";
+            const flushW = node.widgets?.find(w => w.name === "flush_switch");
+            const cacheW = node.widgets?.find(w => w.name === "cache_switch");
+            const isBypassed = isChannelBypassed(chanId);
 
-        if (flushWidget) {
-            const origFlushCb = flushWidget.callback;
-            flushWidget.callback = function (val) {
-                if (origFlushCb) origFlushCb.apply(this, arguments);
-                if (val === true && cacheWidget) {
-                    cacheWidget.value = false;
-                }
-                forceNetworkUpdate(app);
-                if (node.graph) node.graph.setDirtyCanvas(true, true);
-            };
-        }
+            let displayText = `CH: ${chanId}`;
+            let bannerColor = SSG_COLOR_NOMINAL;
 
-        node.refreshSlotLayout = function () {
-            let trackInputs = getTrackInputs(node);
-
-            if (node._isEditMode) {
-                const connectedCount = trackInputs.filter(i => i.link !== null && i.link !== undefined).length || 0;
-                const targetCount = Math.min(24, Math.max(1, connectedCount + 1));
-
-                while (trackInputs.length < targetCount) {
-                    const idx = trackInputs.length;
-                    node.addInput(`SSG_${idx}`, "*");
-                    trackInputs = getTrackInputs(node);
-                    trackInputs[idx].label = "◦";
-                }
-
-                while (trackInputs.length > targetCount && (trackInputs[trackInputs.length - 1].link === null || trackInputs[trackInputs.length - 1].link === undefined)) {
-                    const lastTrack = trackInputs[trackInputs.length - 1];
-                    node.removeInput(node.inputs.indexOf(lastTrack));
-                    trackInputs = getTrackInputs(node);
-                }
-
-                while (node.outputs.length < trackInputs.length) {
-                    const idx = node.outputs.length;
-                    node.addOutput(`SSG_${idx}`, "*");
-                }
-                while (node.outputs.length > trackInputs.length) {
-                    node.removeOutput(node.outputs.length - 1);
-                }
-
-                const currentTracks = [];
-                for (let i = 0; i < trackInputs.length; i++) {
-                    const inp = trackInputs[i];
-                    const out = node.outputs[i];
-
-                    inp.name = `SSG_${i}`;
-                    inp.label = "◦";
-
-                    if (out) out.name = `SSG_${i}`;
-
-                    if (inp.link !== null && inp.link !== undefined) {
-                        const link = getGraphLink(app, node, inp.link);
-                        if (link) {
-                            const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-                            inp.type = resolved.type || "*";
-                            if (out) {
-                                out.label = resolved.name;
-                                out.type = resolved.type || "*";
-                            }
-                            currentTracks.push({ index: i, name: resolved.name, type: resolved.type || "*" });
-                        }
-                    } else {
-                        inp.type = "*";
-                        if (out) {
-                            out.label = "◦";
-                            out.type = "*";
-                        }
-                    }
-                }
-
-                node.properties.vault_manifest = JSON.stringify(currentTracks);
+            if (isBypassed) {
+                displayText = "Injection Bypass Detected";
+                bannerColor = SSG_COLOR_MUTED;
+            } else if (node._isEditMode) {
+                displayText = `CH: ${chanId} [Edit Mode]`;
+                bannerColor = SSG_COLOR_YELLOW_TOPAZ;
+            } else if (cacheW && cacheW.value) {
+                displayText = `CH: ${chanId} [Playback]`;
+                bannerColor = SSG_COLOR_EMERALD_GREEN;
+            } else if (flushW && flushW.value) {
+                displayText = `CH: ${chanId} [Buffer]`;
+                bannerColor = SSG_COLOR_ELECTRIC_PURPLE;
             } else {
-                let savedTracks = [];
-                try {
-                    savedTracks = JSON.parse(node.properties.vault_manifest || "[]");
-                } catch (e) {
-                    savedTracks = [];
-                }
-
-                const targetCount = savedTracks.length;
-
-                while (trackInputs.length < targetCount) {
-                    const idx = trackInputs.length;
-                    node.addInput(`SSG_${idx}`, "*");
-                    trackInputs = getTrackInputs(node);
-                }
-                while (trackInputs.length > targetCount) {
-                    const lastTrack = trackInputs[trackInputs.length - 1];
-                    node.removeInput(node.inputs.indexOf(lastTrack));
-                    trackInputs = getTrackInputs(node);
-                }
-
-                while (node.outputs.length < targetCount) {
-                    const idx = node.outputs.length;
-                    node.addOutput(`SSG_${idx}`, "*");
-                }
-                while (node.outputs.length > targetCount) {
-                    node.removeOutput(node.outputs.length - 1);
-                }
-
-                const currentTracks = [];
-                for (let i = 0; i < targetCount; i++) {
-                    const inp = trackInputs[i];
-                    const out = node.outputs[i];
-
-                    inp.name = `SSG_${i}`;
-                    inp.label = "◦";
-
-                    if (out) out.name = `SSG_${i}`;
-
-                    if (inp.link !== null && inp.link !== undefined) {
-                        const link = getGraphLink(app, node, inp.link);
-                        if (link) {
-                            const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-                            inp.type = resolved.type || "*";
-                            if (out) {
-                                out.label = resolved.name;
-                                out.type = resolved.type || "*";
-                            }
-                        }
-                    }
-                    currentTracks.push({ index: i, name: out?.label || `Track_${i}`, type: inp.type });
-                }
-
-                node.properties.vault_manifest = JSON.stringify(currentTracks);
+                displayText = `CH: ${chanId} [Frozen]`;
+                bannerColor = SSG_COLOR_ICE_BLUE;
             }
 
-            node.size = [SSG_DEFAULT_WIDTH, Math.max(100, (trackInputs.length * 20) + 90)];
-            if (node.graph) node.graph.setDirtyCanvas(true, true);
+            if (typeof node.updateSSGBanner === "function") {
+                node.updateSSGBanner(displayText, bannerColor);
+            }
         };
 
-        const lockButton = node.addWidget(
-            "button",
-            node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
-            null,
-            () => {
+        const genWidget = node.widgets?.find(w => w.name === "schema_generation");
+
+        node.refreshSlotLayout = function () {
+            if (node._isRefreshingSlots) return;
+            node._isRefreshingSlots = true;
+
+            try {
+                const channelName = node.properties.channel_id;
+
+                if (node._isEditMode) {
+                    const connectedCount = node.inputs?.filter(i => i.link !== null && i.link !== undefined).length || 0;
+                    const targetCount = Math.min(24, connectedCount + 1);
+
+                    while (node.inputs.length < targetCount) {
+                        const idx = node.inputs.length;
+                        node.addInput(`SSG_${idx}`, "*");
+                        node.inputs[idx].label = "◦";
+                    }
+                    while (node.inputs.length > targetCount && (node.inputs[node.inputs.length - 1].link === null || node.inputs[node.inputs.length - 1].link === undefined)) {
+                        node.removeInput(node.inputs.length - 1);
+                    }
+
+                    while (node.outputs.length < node.inputs.length) {
+                        const idx = node.outputs.length;
+                        node.addOutput(`SSG_${idx}`, "*");
+                        node.outputs[idx].label = "◦";
+                    }
+                    while (node.outputs.length > node.inputs.length) {
+                        node.removeOutput(node.outputs.length - 1);
+                    }
+
+                    const currentTracks = [];
+                    node.inputs.forEach((input, idx) => {
+                        input.name = `SSG_${idx}`;
+                        if (input.link !== null && input.link !== undefined) {
+                            const link = getGraphLink(app, node, input.link);
+                            if (link) {
+                                const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
+                                input.label = resolved.name;
+                                input.type = resolved.type;
+                                currentTracks.push({ index: idx, name: resolved.name, type: resolved.type });
+                            }
+                        } else {
+                            input.label = "◦";
+                            input.type = "*";
+                        }
+
+                        if (node.outputs[idx]) {
+                            node.outputs[idx].name = `SSG_${idx}`;
+                            node.outputs[idx].label = input.label;
+                            node.outputs[idx].type = input.type;
+                        }
+                    });
+
+                    node.properties.vault_manifest = JSON.stringify(currentTracks);
+
+                    if (channelName) {
+                        registerChannel(channelName, currentTracks, genWidget?.value || 1, true, false);
+                    }
+                } else {
+                    let savedTracks = [];
+                    try {
+                        savedTracks = JSON.parse(node.properties.vault_manifest || "[]");
+                    } catch (e) {
+                        savedTracks = [];
+                    }
+
+                    const targetCount = savedTracks.length;
+
+                    while (node.inputs.length < targetCount) {
+                        const idx = node.inputs.length;
+                        node.addInput(`SSG_${idx}`, "*");
+                        node.inputs[idx].label = "◦";
+                    }
+                    while (node.inputs.length > targetCount) {
+                        node.removeInput(node.inputs.length - 1);
+                    }
+
+                    while (node.outputs.length < targetCount) {
+                        const idx = node.outputs.length;
+                        node.addOutput(`SSG_${idx}`, "*");
+                        node.outputs[idx].label = "◦";
+                    }
+                    while (node.outputs > targetCount) {
+                        node.removeOutput(node.outputs.length - 1);
+                    }
+
+                    savedTracks.forEach((track, idx) => {
+                        if (node.inputs[idx]) {
+                            node.inputs[idx].name = `SSG_${idx}`;
+                            node.inputs[idx].label = track.name || `SSG_${idx}`;
+                            node.inputs[idx].type = track.type || "*";
+                        }
+                        if (node.outputs[idx]) {
+                            node.outputs[idx].name = `SSG_${idx}`;
+                            node.outputs[idx].label = track.name || `SSG_${idx}`;
+                            node.outputs[idx].type = track.type || "*";
+                        }
+                    });
+
+                    node.properties.vault_manifest = JSON.stringify(savedTracks);
+
+                    if (channelName) {
+                        registerChannel(channelName, savedTracks, genWidget?.value || 1, false, false);
+                    }
+                }
+
+                const targetHeight = Math.max(120, (node.inputs.length * 20) + 140);
+                updateNodeBounds(node, SSG_DEFAULT_WIDTH, targetHeight);
+                node.updateVaultBannerState();
+            } finally {
+                node._isRefreshingSlots = false;
+            }
+        };
+
+        const lockButton = {
+            type: "button",
+            name: node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
+            label: node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]",
+            value: null,
+            callback: () => {
                 node._isEditMode = !node._isEditMode;
                 node.properties.is_locked = !node._isEditMode;
-                lockButton.name = node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]";
 
-                let trackInputs = getTrackInputs(node);
+                const nextLabel = node._isEditMode ? "[ Lock Schema ]" : "[ Edit Schema ]";
+                lockButton.name = nextLabel;
+                lockButton.label = nextLabel;
+
+                if (typeof node.onWidgetChanged === "function") {
+                    node.onWidgetChanged(lockButton.name, lockButton.value, null, lockButton);
+                }
 
                 if (!node._isEditMode) {
-                    for (let i = trackInputs.length - 1; i >= 0; i--) {
-                        if (trackInputs[i].link === null || trackInputs[i].link === undefined) {
-                            const realIdx = node.inputs.indexOf(trackInputs[i]);
-                            node.removeInput(realIdx);
+                    for (let i = node.inputs.length - 1; i >= 0; i--) {
+                        if (node.inputs[i].link === null || node.inputs[i].link === undefined) {
+                            node.removeInput(i);
                             if (node.outputs[i]) node.removeOutput(i);
                         }
                     }
 
-                    trackInputs = getTrackInputs(node);
                     const currentTracks = [];
-                    for (let i = 0; i < trackInputs.length; i++) {
-                        const inp = trackInputs[i];
-                        const out = node.outputs[i];
-
-                        inp.name = `SSG_${i}`;
-                        inp.label = "◦";
-
-                        if (out) out.name = `SSG_${i}`;
-
-                        if (inp.link !== null && inp.link !== undefined) {
-                            const link = getGraphLink(app, node, inp.link);
+                    node.inputs.forEach((input, idx) => {
+                        input.name = `SSG_${idx}`;
+                        if (input.link !== null && input.link !== undefined) {
+                            const link = getGraphLink(app, node, input.link);
                             if (link) {
                                 const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-                                inp.type = resolved.type || "*";
-                                if (out) {
-                                    out.label = resolved.name;
-                                    out.type = resolved.type || "*";
-                                }
+                                input.label = resolved.name;
+                                input.type = resolved.type || "*";
                             }
                         }
-                        currentTracks.push({ index: i, name: out?.label || `Track_${i}`, type: inp.type });
-                    }
+                        currentTracks.push({ index: idx, name: input.label, type: input.type });
+
+                        if (node.outputs[idx]) {
+                            node.outputs[idx].name = `SSG_${idx}`;
+                            node.outputs[idx].label = input.label;
+                            node.outputs[idx].type = input.type;
+                        }
+                    });
 
                     node.properties.vault_manifest = JSON.stringify(currentTracks);
+
+                    if (genWidget) {
+                        genWidget.value = (genWidget.value || 0) + 1;
+                    }
+
+                    const channelName = node.properties.channel_id;
+                    if (channelName) {
+                        registerChannel(channelName, currentTracks, genWidget?.value || 1, false, false);
+                    }
                 }
 
                 node.refreshSlotLayout();
+                node.updateVaultBannerState();
+
+                lockButton.triggerDraw?.();
+                node.setDirtyCanvas(true, true);
+
+                if (node.graph) {
+                    node.graph._version = (node.graph._version || 0) + 1;
+                    if (typeof node.graph.change === "function") {
+                        node.graph.change();
+                    }
+                }
+                app.canvas?.setDirty(true, true);
+
+                if (typeof app.canvas?.draw === "function") {
+                    app.canvas.draw(true, true);
+                }
+                requestAnimationFrame(() => {
+                    app.canvas?.draw?.(true, true);
+                });
+
                 forceNetworkUpdate(app);
             }
+        };
+
+        if (!flushWidget) {
+            flushWidget = node.addWidget("toggle", "flush_switch", true, null, { on: "Flush On", off: "Flush Off" });
+        }
+        if (!cacheWidget) {
+            cacheWidget = node.addWidget("toggle", "cache_switch", false, null, { on: "Playback", off: "Live Pass" });
+        }
+
+        const origFlushCb = flushWidget.callback;
+        flushWidget.callback = function (v) {
+            if (v && cacheWidget && cacheWidget.value) {
+                cacheWidget.value = false;
+            }
+            if (origFlushCb) origFlushCb.apply(this, arguments);
+            node.updateVaultBannerState();
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        };
+
+        const origCacheCb = cacheWidget.callback;
+        cacheWidget.callback = function (v) {
+            if (v && flushWidget && flushWidget.value) {
+                flushWidget.value = false;
+            }
+            if (origCacheCb) origCacheCb.apply(this, arguments);
+            node.updateVaultBannerState();
+            forceNetworkUpdate(app);
+            if (node.graph) node.graph.setDirtyCanvas(true, true);
+        };
+
+        // Deterministic Slot Assembly: [Slot 0: Banner, Slot 1: Button, ...Remaining, Slot 3: Flush, Slot 4: Cache]
+        const remainingWidgets = (node.widgets || []).filter(
+            w => w !== domBannerWidget && w !== lockButton && w !== flushWidget && w !== cacheWidget
         );
+        node.widgets = [domBannerWidget, lockButton, ...remainingWidgets, flushWidget, cacheWidget].filter(Boolean);
 
         node.onConnectionsChange = function () {
             if (node._isEditMode) {
                 node.refreshSlotLayout();
             }
+            node.updateVaultBannerState();
         };
 
         node.refreshSlotLayout();
+        node.updateVaultBannerState();
+        updateNodeBounds(node, SSG_DEFAULT_WIDTH, 140);
 
         setTimeout(() => {
             forceNetworkUpdate(app);
@@ -436,6 +518,14 @@ export function setupSmartVault(nodeType, nodeData, app) {
     const origOnRemoved = nodeType.prototype.onRemoved;
     nodeType.prototype.onRemoved = function () {
         if (origOnRemoved) origOnRemoved.apply(this, arguments);
+
+        const node = this;
+        const chanId = node.properties?.channel_id || node.properties?.vault_id;
+
+        if (chanId && window.SSG_PipeRegistry && window.SSG_PipeRegistry[chanId]) {
+            delete window.SSG_PipeRegistry[chanId];
+        }
+
         setTimeout(() => {
             forceNetworkUpdate(app);
         }, 30);
@@ -444,89 +534,5 @@ export function setupSmartVault(nodeType, nodeData, app) {
     const origOnDrawForeground = nodeType.prototype.onDrawForeground;
     nodeType.prototype.onDrawForeground = function (ctx) {
         if (origOnDrawForeground) origOnDrawForeground.apply(this, arguments);
-
-        const node = this;
-
-        const channelName = node.properties.channel_id || node.properties.vault_id;
-        const flushWidget = node.widgets?.find(w => w.name === "flush_switch");
-        const cacheWidget = node.widgets?.find(w => w.name === "cache_switch");
-
-        const isRecording = flushWidget?.value === true && !cacheWidget?.value;
-        const isPlayback = cacheWidget?.value === true;
-
-        if (node.flags?.collapsed) {
-            node.title = "Vault";
-        } else {
-            let stateBadge = "❄";
-            if (isRecording) stateBadge = "🔴";
-            else if (isPlayback) stateBadge = "⚡";
-
-            node.title = `SSG Smart Vault ${stateBadge}`;
-        }
-
-        const trackInputs = getTrackInputs(node);
-        let activeTier = DIAGNOSTIC_TIERS.TIER_0_NOMINAL;
-        const hasBrokenInputLink = !node._isEditMode && trackInputs.length > 0 && trackInputs.some(i => i.link === null || i.link === undefined);
-
-        let hasTypeMismatch = false;
-        let hasNameMismatch = false;
-
-        if (!node._isEditMode && trackInputs.length > 0) {
-            let savedTracks = [];
-            try {
-                savedTracks = JSON.parse(node.properties.vault_manifest || "[]");
-            } catch (e) {
-                savedTracks = [];
-            }
-
-            for (let i = 0; i < trackInputs.length; i++) {
-                const input = trackInputs[i];
-                const manifestTrack = savedTracks[i];
-
-                if (input.link !== null && input.link !== undefined && manifestTrack) {
-                    const link = getGraphLink(app, node, input.link);
-                    if (link) {
-                        const resolved = findTrueUpstreamAnchor(app, node, link.origin_id, link.origin_slot);
-
-                        const expectedType = manifestTrack.type || "*";
-                        const actualType = resolved.type || "*";
-                        if (expectedType !== "*" && actualType !== "*" && expectedType !== actualType) {
-                            hasTypeMismatch = true;
-                        }
-
-                        const expectedName = manifestTrack.name || `SSG_${i}`;
-                        const actualName = resolved.name || "◦";
-                        if (expectedName !== actualName) {
-                            hasNameMismatch = true;
-                        }
-                    }
-                }
-            }
-        }
-
-        if (!channelName) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_3_RED;
-        } else if (hasBrokenInputLink || hasTypeMismatch) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_2_ORANGE;
-        } else if (node._isEditMode || hasNameMismatch) {
-            activeTier = DIAGNOSTIC_TIERS.TIER_1_YELLOW;
-        }
-
-        drawSSGWarningOutline(node, ctx, activeTier);
-
-        if (node.flags?.collapsed) {
-            const cleanName = sanitizeAndTruncateText(channelName || "ERROR", 16);
-            const activeCount = trackInputs.filter(i => i.link !== null && i.link !== undefined).length || 0;
-            const modeState = node._isEditMode ? "EDIT" : "LOCKED";
-            
-            let statusText = "FROZEN";
-            if (isRecording) statusText = "RECORDING";
-            else if (isPlayback) statusText = "PLAYBACK";
-
-            const customTitle = node.title !== "Vault" && node.title !== "SSG Smart Vault" ? ` - ${node.title}` : "";
-            const badgeLabel = `VAULT: ${cleanName}${customTitle} [${activeCount} Trk | ${statusText} | ${modeState}]`;
-
-            drawMasterGlobalTooltip(node, ctx, app, badgeLabel);
-        }
     };
 }

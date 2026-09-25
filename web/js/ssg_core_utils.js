@@ -1,17 +1,28 @@
 // ==========================================================================
-// SSG CUSTOM NODE ECOSYSTEM (V2 ARCHITECTURE)
+// SSG CUSTOM NODE ECOSYSTEM (V4 ARCHITECTURE)
 // Core Engine Utilities, Recursive Drill & Canvas Telemetry
 // File: /web/js/ssg_core_utils.js
 // ==========================================================================
 
-export const SSG_DEFAULT_WIDTH = 220;
-export const AW_BLUE = "#00E5FF";
+export const SSG_DEFAULT_WIDTH = 250;
+
+// Semantic Diagnostic & Identity Palette (Calibrated Neon Specification)
+export const SSG_COLOR_AWBLUE = "#00e5ff";        // Tier 0 - Diagnostics Base Cyan
+export const SSG_COLOR_EMERALD_GREEN = "#00ff88"; // Playback Active / Mint
+export const SSG_COLOR_ICE_BLUE = "#38bdf8";      // Frozen / Idle Retention / Bank B
+export const SSG_COLOR_RUBY_RED = "#ff3333";      // Tier 3 - Fault / Unavailable
+export const SSG_COLOR_YELLOW_TOPAZ = "#ffcc00";  // Tier 1 - Edit Mode / Available
+export const SSG_COLOR_FIRE_OPAL = "#ff7700";     // Tier 2 - Desync / Missing Module Warning
+export const SSG_COLOR_ELECTRIC_PURPLE = "#b026ff"; // Vault Latent Buffer Active
+export const SSG_COLOR_MUTED = "#555b66";         // Inactive Loop / Injection Bypass
+
+export const AW_BLUE = SSG_COLOR_AWBLUE;
 
 export const DIAGNOSTIC_TIERS = {
     TIER_0_NOMINAL: null,
-    TIER_1_YELLOW: "#ffcc00",
-    TIER_2_ORANGE: "#ff7700",
-    TIER_3_RED: "#ff3333"
+    TIER_1_YELLOW: SSG_COLOR_YELLOW_TOPAZ,
+    TIER_2_ORANGE: SSG_COLOR_FIRE_OPAL,
+    TIER_3_RED: SSG_COLOR_RUBY_RED
 };
 
 if (!window.SSG_PipeRegistry) {
@@ -28,6 +39,67 @@ if (!window.SSG_SocketRegistry) {
 
 if (!window.SSG_ActiveHighlights) {
     window.SSG_ActiveHighlights = new Set();
+}
+
+// Global cached frontend version resolved from backend telemetry
+window.SSG_CachedFrontendVersion = null;
+
+/**
+ * Asynchronously hydrates the frontend engine version from the backend API route.
+ * Guarantees ground-truth version resolution across all distribution models.
+ */
+export async function syncBackendFrontendVersion() {
+    if (window.SSG_CachedFrontendVersion) return window.SSG_CachedFrontendVersion;
+    try {
+        const res = await fetch("/ssg/suite/frontend_version");
+        if (res.ok) {
+            const data = await res.json();
+            if (data && data.frontend_version) {
+                window.SSG_CachedFrontendVersion = String(data.frontend_version).trim().replace(/^v/, "");
+                return window.SSG_CachedFrontendVersion;
+            }
+        }
+    } catch (e) {
+        console.warn("[SSG] Telemetry version sync unreachable, using fallback heuristics:", e);
+    }
+    return null;
+}
+
+// Immediate boot fetch
+syncBackendFrontendVersion();
+
+/**
+ * Semver comparison engine anchored to backend ground-truth telemetry.
+ * Returns true if current frontend >= targetVersion.
+ * In Nodes 2.0 (Vue active) where version < 1.53.6, returns false.
+ */
+export function isFrontendVersionAtLeast(targetVersion = "1.53.6", appInstance = null) {
+    const isNodes2 = !!window.__VUE__ || !!document.querySelector(".comfyui-vue-root, #vue-app, [data-comfy-root]");
+
+    // Classic canvas always supports dynamic LiteGraph widget drawing
+    if (!isNodes2) {
+        return true;
+    }
+
+    const liveVersion = window.SSG_CachedFrontendVersion;
+    if (!liveVersion || liveVersion === "0.0.0" || liveVersion === "Unknown") {
+        // Fallback: If in Nodes 2.0 and version is indeterminate, lock down to static for safety
+        return false;
+    }
+
+    const parseParts = (v) => v.replace(/^v/, "").split(".").map(n => parseInt(n, 10) || 0);
+    const currParts = parseParts(liveVersion);
+    const targetParts = parseParts(targetVersion);
+
+    const len = Math.max(currParts.length, targetParts.length);
+    for (let i = 0; i < len; i++) {
+        const curr = currParts[i] || 0;
+        const target = targetParts[i] || 0;
+        if (curr > target) return true;
+        if (curr < target) return false;
+    }
+
+    return true;
 }
 
 /**
@@ -50,95 +122,133 @@ export function sanitizeAndTruncateText(str, maxLen = 16) {
     return sliced.trim();
 }
 
-export function applyDynamicShavePass(node) {
-    const typeNameMap = {
-        "SSGSmartPipe": { full: "SSG Smart Pipe", shaved: "Pipe" },
-        "SSGSmartRouter": { full: "SSG Smart Router", shaved: "Router" },
-        "SSGSmartSatellite": { full: "SSG Smart Satellite", shaved: "Satellite" },
-        "SSGSmartGate": { full: "SSG Smart Gate", shaved: "Gate" },
-        "SSGSmartGateRelay": { full: "SSG Smart Gate Relay", shaved: "Relay" },
-        "SSGSmartGateReturn": { full: "SSG Smart Gate Return", shaved: "Return" },
-        "SSGSmartVault": { full: "SSG Smart Vault", shaved: "Vault" },
-        "SSGSmartTag": { full: "SSG Smart Tag", shaved: "Tag" },
-        "SSGSmartSocket": { full: "SSG Smart Socket", shaved: "Socket" }
-    };
+/**
+ * Nodes 2.0 and Classic compatible bounding size synchronizer.
+ * Enforces elastic minimum floor while preserving user-expanded width geometry.
+ */
+export function updateNodeBounds(node, width, height) {
+    if (!node) return;
+    const currentWidth = (node.size && node.size[0]) ? node.size[0] : SSG_DEFAULT_WIDTH;
+    const targetWidth = Math.max(SSG_DEFAULT_WIDTH, width || currentWidth);
+    const targetHeight = Math.max(60, height || (node.size ? node.size[1] : 100));
 
-    const map = typeNameMap[node.type];
-    if (!map) return;
+    node.size = [targetWidth, targetHeight];
 
-    if (!node.flags?.collapsed) {
-        if (node.title === map.shaved) {
-            node.title = map.full;
+    if (typeof node.setSize === "function") {
+        node.setSize(node.size);
+    }
+
+    if (node.graph) {
+        node.graph._version = (node.graph._version || 0) + 1;
+        if (typeof node.graph.change === "function") {
+            node.graph.change();
         }
-    } else {
-        if (node.title === map.full) {
-            node.title = map.shaved;
-        }
+        node.graph.setDirtyCanvas(true, true);
     }
 }
 
+/**
+ * Non-breaking compatibility export for legacy companion modules.
+ * Latches state without performing DOM/Canvas2D breaking border strokes.
+ */
 export function drawSSGWarningOutline(node, ctx, tierColor) {
-    const isHighlighted = isNodeChannelHighlighted(node);
+    if (!node) return;
+    node._ssgDiagnosticTier = tierColor || null;
+}
 
-    if (!tierColor && !isHighlighted) return;
+/**
+ * Universal Slot 0 Status Banner Drawing Primitive (Legacy Canvas 2D Fallback).
+ * Retained strictly for third-party companion modules; primary suite uses ssg_dom_banner.js.
+ */
+export function drawSSGWidgetBanner(ctx, widgetWidth, y, displayText, tierColor = null, customAccent = null, nodeRef = null) {
+    const margin = (typeof LiteGraph !== "undefined" && LiteGraph.NODE_WIDGET_MARGIN)
+        ? LiteGraph.NODE_WIDGET_MARGIN
+        : 15;
+
+    const hostWidth = (widgetWidth && widgetWidth > 40)
+        ? widgetWidth
+        : ((nodeRef && nodeRef.size && nodeRef.size[0]) ? (nodeRef.size[0] - (margin * 2)) : 190);
+
+    const drawWidth = Math.max(hostWidth - (margin * 2), 20);
+    const drawHeight = 22;
+    const drawY = y + 2;
+
+    const defaultStroke = (typeof LiteGraph !== "undefined" && LiteGraph.WIDGET_OUTLINE_COLOR)
+        ? LiteGraph.WIDGET_OUTLINE_COLOR
+        : "#333b46";
+    const defaultText = (typeof LiteGraph !== "undefined" && LiteGraph.NODE_TEXT_COLOR)
+        ? LiteGraph.NODE_TEXT_COLOR
+        : "#cccccc";
+
+    const stroke = tierColor || customAccent || defaultStroke;
+    const fillText = tierColor || customAccent || defaultText;
 
     ctx.save();
 
-    if (isHighlighted) {
-        ctx.strokeStyle = AW_BLUE;
-        ctx.lineWidth = 3.5;
-        ctx.shadowColor = AW_BLUE;
-        ctx.shadowBlur = 12;
-    } else {
-        ctx.strokeStyle = tierColor;
-        ctx.lineWidth = 2.5;
-    }
+    ctx.fillStyle = "#0f1216";
+    ctx.strokeStyle = stroke;
+    ctx.lineWidth = 1.0;
+    ctx.shadowBlur = 0;
+    ctx.shadowColor = "transparent";
 
     ctx.beginPath();
-
-    if (node.flags?.collapsed) {
-        const titleHeight = (typeof LiteGraph !== "undefined" && LiteGraph.NODE_TITLE_HEIGHT) ? LiteGraph.NODE_TITLE_HEIGHT : 30;
-        const collapsedWidth = node._collapsed_width || (ctx.measureText(node.title || "").width + 50);
-        ctx.roundRect(0, -titleHeight, collapsedWidth, titleHeight, [6]);
-    } else {
-        ctx.roundRect(0, 0, node.size[0], node.size[1], [6]);
-    }
-
-    ctx.stroke();
-    ctx.restore();
-}
-
-export function isCanvasDragging(app) {
-    return !!(app?.canvas?.node_dragged || app?.canvas?.is_dragging || app?.canvas?.dragging_canvas);
-}
-
-export function drawMasterGlobalTooltip(node, ctx, app, labelText) {
-    if (!node.flags?.collapsed || !labelText || isCanvasDragging(app)) return;
-
-    const isHovered = app.canvas?.node_over === node;
-    if (!isHovered) return;
-
-    ctx.save();
-    ctx.font = "bold 11px Arial, sans-serif";
-    const textWidth = ctx.measureText(labelText).width;
-    const badgeWidth = textWidth + 16;
-    const badgeHeight = 22;
-
-    const posX = -badgeWidth - 8;
-    const posY = 3;
-
-    ctx.fillStyle = "rgba(18, 22, 28, 0.94)";
-    ctx.strokeStyle = "#4a4d52";
-    ctx.lineWidth = 1.2;
-    ctx.beginPath();
-    ctx.roundRect(posX, posY, badgeWidth, badgeHeight, [4]);
+    ctx.roundRect(margin, drawY, drawWidth, drawHeight, [4]);
+    ctx.closePath();
     ctx.fill();
     ctx.stroke();
 
-    ctx.fillStyle = AW_BLUE;
-    ctx.textAlign = "left";
+    ctx.font = "bold 11px 'Courier New', monospace";
     ctx.textBaseline = "middle";
-    ctx.fillText(labelText, posX + 8, posY + (badgeHeight / 2));
+
+    const maxTextWidth = drawWidth - 12;
+
+    if (displayText.endsWith(" [A]") || displayText.endsWith(" [B]")) {
+        const isBankB = displayText.endsWith(" [B]");
+        const baseText = displayText.slice(0, -4);
+        const badgeText = isBankB ? "[B]" : "[A]";
+
+        let totalBaseWidth = ctx.measureText(baseText + " ").width;
+        let badgeWidth = ctx.measureText(badgeText).width;
+        let totalRequiredWidth = totalBaseWidth + badgeWidth;
+
+        if (totalRequiredWidth > maxTextWidth && maxTextWidth > 0) {
+            const scale = Math.max(maxTextWidth / totalRequiredWidth, 0.75);
+            ctx.font = `bold ${Math.floor(11 * scale)}px 'Courier New', monospace`;
+            totalBaseWidth = ctx.measureText(baseText + " ").width;
+            badgeWidth = ctx.measureText(badgeText).width;
+        }
+
+        const startX = margin + (drawWidth / 2) - ((totalBaseWidth + badgeWidth) / 2);
+
+        ctx.textAlign = "left";
+        ctx.fillStyle = fillText;
+        ctx.fillText(baseText + " ", startX, drawY + (drawHeight / 2));
+
+        ctx.fillStyle = isBankB ? SSG_COLOR_ICE_BLUE : fillText;
+        ctx.fillText(badgeText, startX + totalBaseWidth, drawY + (drawHeight / 2));
+    } else {
+        let stringWidth = ctx.measureText(displayText).width;
+        let textToDraw = displayText;
+
+        if (stringWidth > maxTextWidth && maxTextWidth > 0) {
+            const scale = maxTextWidth / stringWidth;
+            if (scale >= 0.75) {
+                const fontSize = Math.floor(11 * scale);
+                ctx.font = `bold ${fontSize}px 'Courier New', monospace`;
+            } else {
+                ctx.font = "bold 9px 'Courier New', monospace";
+                while (textToDraw.length > 4 && ctx.measureText(textToDraw + "…").width > maxTextWidth) {
+                    textToDraw = textToDraw.slice(0, -1);
+                }
+                textToDraw = textToDraw + "…";
+            }
+        }
+
+        ctx.fillStyle = fillText;
+        ctx.textAlign = "center";
+        ctx.fillText(textToDraw, margin + (drawWidth / 2), drawY + (drawHeight / 2));
+    }
+
     ctx.restore();
 }
 
@@ -229,7 +339,6 @@ export function isChannelHighlighted(channelId) {
 export function isNodeChannelHighlighted(node) {
     if (!node || window.SSG_ActiveHighlights.size === 0) return false;
 
-    // 1. Direct Broadcaster/Receiver Properties (Pipes, Routers, Gates, Vaults, Sockets)
     const chanId = node.properties?.channel_id || node.properties?.bound_channel || node.properties?.vault_id;
     if (chanId) {
         const cleanBase = chanId.replace(/_TX$/, "").replace(/_RX$/, "");
@@ -243,7 +352,6 @@ export function isNodeChannelHighlighted(node) {
         }
     }
 
-    // 2. Bound Module Target Socket Property (SSG Smart Modules linked to Socket)
     const targetSockProp = node.properties?.target_socket;
     if (targetSockProp) {
         const cleanTarget = String(targetSockProp).trim();
@@ -252,7 +360,6 @@ export function isNodeChannelHighlighted(node) {
         }
     }
 
-    // 3. Dropdown Widget Bindings (Satellites, Relays, Returns & Module Widgets)
     if (node.widgets) {
         const chW = node.widgets.find(w => w.name === "channel" || w.name === "target_socket");
         if (chW && chW.value) {
@@ -286,6 +393,7 @@ export function findTrueUpstreamAnchor(app, callingNode, originNodeId, originSlo
 
     const { node: originNode, graph: currentGraph } = searchResult;
 
+    // 1. Reroute Nodes: Trace straight through
     if (originNode.type === "Reroute") {
         if (originNode.inputs && originNode.inputs[0] && originNode.inputs[0].link !== null) {
             const linkId = originNode.inputs[0].link;
@@ -296,7 +404,8 @@ export function findTrueUpstreamAnchor(app, callingNode, originNodeId, originSlo
         }
     }
 
-    if (originNode.type === "SSGSmartTag") {
+    // 2. SSG Smart Tag: Explicit Hard-Stop Boundary
+    if (originNode.type === "SSGSmartTag" || originNode.comfyClass === "SSGSmartTag") {
         const tagWidget = originNode.widgets?.find(w => w.name === "tag_name" || w.name === "tag");
         const typeWidget = originNode.widgets?.find(w => w.name === "type_override");
 
@@ -326,6 +435,28 @@ export function findTrueUpstreamAnchor(app, callingNode, originNodeId, originSlo
         return { name: resolvedTag, type: resolvedType || "*" };
     }
 
+    const slotDef = originNode.outputs?.[originSlotIndex];
+    const rawSlotLabel = slotDef?.label || slotDef?.name;
+
+    // 3. SSG Smart Satellite: Direct Terminal Slot Reading
+    if (originNode.type === "SSGSmartSatellite" || originNode.comfyClass === "SSGSmartSatellite") {
+        if (slotDef) {
+            if (rawSlotLabel && rawSlotLabel !== "◦" && !rawSlotLabel.startsWith("SSG_")) {
+                return {
+                    name: sanitizeAndTruncateText(rawSlotLabel, 16),
+                    type: slotDef.type || "*"
+                };
+            }
+            if (slotDef.type && slotDef.type !== "*") {
+                return {
+                    name: sanitizeAndTruncateText(slotDef.type, 16),
+                    type: slotDef.type
+                };
+            }
+        }
+    }
+
+    // 4. Subgraph Input Bridges: Recurse into Outer Graph Connections
     if (originNode.type === "GraphInput" || originNode.type === "SubgraphInput") {
         const parentNode = currentGraph.parent_node;
         if (parentNode && parentNode.inputs) {
@@ -346,6 +477,7 @@ export function findTrueUpstreamAnchor(app, callingNode, originNodeId, originSlo
         }
     }
 
+    // 5. Known Multi-Output Signatures (Checkpoints, DualCLIP, etc.)
     if (KNOWN_MULTI_OUTPUT_MAPS[originNode.type]) {
         const slotMap = KNOWN_MULTI_OUTPUT_MAPS[originNode.type];
         if (slotMap[originSlotIndex]) {
@@ -353,9 +485,7 @@ export function findTrueUpstreamAnchor(app, callingNode, originNodeId, originSlo
         }
     }
 
-    const slotDef = originNode.outputs?.[originSlotIndex];
-    const rawSlotLabel = slotDef?.label || slotDef?.name;
-
+    // 6. Generic Multi-Output Slot Label Prioritization
     if (originNode.outputs && originNode.outputs.length > 1) {
         if (rawSlotLabel && rawSlotLabel !== "◦" && rawSlotLabel !== "") {
             return {
@@ -371,12 +501,17 @@ export function findTrueUpstreamAnchor(app, callingNode, originNodeId, originSlo
         }
     }
 
-    if (originNode.title && originNode.title !== originNode.type && originNode.title !== originNode.comfyClass) {
+    // 7. Custom User-Renamed Nodes (Excluding SSG Multiplexers)
+    const isSSGNode = (originNode.type && (originNode.type.startsWith("SSGSmart") || originNode.type.startsWith("SSG"))) ||
+                      (originNode.comfyClass && (originNode.comfyClass.startsWith("SSGSmart") || originNode.comfyClass.startsWith("SSG")));
+
+    if (!isSSGNode && originNode.title && originNode.title !== originNode.type && originNode.title !== originNode.comfyClass) {
         const cleanTitle = sanitizeAndTruncateText(originNode.title, 16);
         const slotType = slotDef?.type || "*";
         return { name: cleanTitle, type: slotType };
     }
 
+    // 8. Output Slot Explicit Label Fallback
     if (rawSlotLabel && rawSlotLabel !== "◦" && rawSlotLabel !== "") {
         return {
             name: sanitizeAndTruncateText(rawSlotLabel, 16),
@@ -384,6 +519,7 @@ export function findTrueUpstreamAnchor(app, callingNode, originNodeId, originSlo
         };
     }
 
+    // 9. Root Type Fallback
     const fallbackType = (slotDef?.type && slotDef.type !== "*") ? slotDef.type : originNode.type;
     const cleanFallback = fallbackType ? sanitizeAndTruncateText(fallbackType, 16) : "Track";
 
@@ -453,7 +589,7 @@ export function scanActiveSockets(app) {
     return Array.from(activeSocketIds);
 }
 
-export function registerChannel(channelName, tracks, explicitGen = null, is_editing = false) {
+export function registerChannel(channelName, tracks, explicitGen = null, is_editing = false, is_bypassed = false) {
     if (!channelName || channelName === "UNASSIGNED") return;
 
     const currentRecord = window.SSG_PipeRegistry[channelName] || { generation: 0 };
@@ -463,8 +599,32 @@ export function registerChannel(channelName, tracks, explicitGen = null, is_edit
         tracks: [...tracks],
         generation: nextGen,
         is_editing: is_editing,
+        is_bypassed: is_bypassed,
         timestamp: Date.now()
     };
+}
+
+export function registerGateLoopState(channelBaseName, isLoopActive) {
+    if (!channelBaseName) return;
+    const isBypassed = !isLoopActive;
+    if (window.SSG_PipeRegistry[`${channelBaseName}_TX`]) {
+        window.SSG_PipeRegistry[`${channelBaseName}_TX`.trim()].is_bypassed = isBypassed;
+    }
+    if (window.SSG_PipeRegistry[`${channelBaseName}_RX`]) {
+        window.SSG_PipeRegistry[`${channelBaseName}_RX`.trim()].is_bypassed = isBypassed;
+    }
+}
+
+export function isChannelBypassed(channelName) {
+    if (!channelName || !window.SSG_PipeRegistry) return false;
+    const record = window.SSG_PipeRegistry[channelName];
+    if (record && record.is_bypassed === true) return true;
+
+    const baseName = channelName.replace(/_TX$/, "").replace(/_RX$/, "");
+    const baseTx = window.SSG_PipeRegistry[`${baseName}_TX`];
+    if (baseTx && baseTx.is_bypassed === true) return true;
+
+    return false;
 }
 
 export function getChannelRecord(channelName) {
@@ -488,7 +648,6 @@ export function forceNetworkUpdate(app) {
         for (const node of allNodes) {
             if (!node) continue;
 
-            // Trigger dropdown refreshes across all wireless receivers
             if (
                 (node.type === "SSGSmartSatellite" ||
                  node.type === "SSGSmartGateRelay" ||
@@ -500,6 +659,13 @@ export function forceNetworkUpdate(app) {
 
             if (typeof node._ssgRefreshSocketDropdown === "function") {
                 node._ssgRefreshSocketDropdown();
+            }
+
+            if (
+                (node.type === "SSGSmartTag" || node.comfyClass === "SSGSmartTag") &&
+                typeof node.updateTagSlotState === "function"
+            ) {
+                node.updateTagSlotState();
             }
         }
 
@@ -529,7 +695,7 @@ export function hydrateSSGNetwork(app) {
                 if (channelName && manifestStr) {
                     try {
                         const tracks = JSON.parse(manifestStr);
-                        registerChannel(channelName, tracks, genW?.value || 1, false);
+                        registerChannel(channelName, tracks, genW?.value || 1, false, false);
                     } catch (e) {
                         console.warn("[SSG] Failed to parse manifest during hydration:", e);
                     }
@@ -537,27 +703,46 @@ export function hydrateSSGNetwork(app) {
             }
         } else if (node.type === "SSGSmartGate") {
             const isLocked = node.properties?.is_locked === true;
+            const channelName = node.properties?.channel_id;
+            const injectWidget = node.widgets?.find(w => w.name === "injection_loop");
+            
+            const isLoopActive = (node.properties?.injection_loop !== undefined)
+                ? !!node.properties.injection_loop
+                : (injectWidget ? !!injectWidget.value : false);
+
+            if (injectWidget && node.properties?.injection_loop !== undefined) {
+                injectWidget.value = !!node.properties.injection_loop;
+            }
+
             if (isLocked) {
                 node._isEditMode = false;
-                const channelName = node.properties?.channel_id;
                 const manifestStr = node.properties?.gate_manifest;
                 const genW = node.widgets?.find(w => w.name === "schema_generation");
 
                 if (channelName && manifestStr) {
                     try {
                         const tracks = JSON.parse(manifestStr);
-                        registerChannel(`${channelName}_TX`, tracks, genW?.value || 1, false);
+                        registerChannel(`${channelName}_TX`, tracks, genW?.value || 1, false, !isLoopActive);
+                        registerChannel(`${channelName}_RX`, tracks, genW?.value || 1, false, !isLoopActive);
                     } catch (e) {
                         console.warn("[SSG] Failed to parse Gate manifest during hydration:", e);
                     }
                 }
+            }
+
+            if (channelName) {
+                registerGateLoopState(channelName, isLoopActive);
+            }
+        } else if (node.type === "SSGSmartTag" || node.comfyClass === "SSGSmartTag") {
+            if (typeof node.updateTagSlotState === "function") {
+                node.updateTagSlotState();
             }
         }
     }
 
     for (const node of allNodes) {
         if (!node) continue;
-        if (node.type === "SSGSmartSatellite") {
+        if (node.type === "SSGSmartSatellite" || node.type === "SSGSmartGateRelay" || node.type === "SSGSmartGateReturn") {
             const channelW = node.widgets?.find(w => w.name === "channel");
             const targetChannel = channelW?.value || node.properties?.bound_channel;
             if (targetChannel && window.SSG_PipeRegistry[targetChannel]) {
