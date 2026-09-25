@@ -52,7 +52,7 @@ The **SSG Smart Suite** is a 9-node, industrial-grade, signal routing, state seq
 
 ---
 
-![SSG Smart Suite Hero Banner](assets/ssg_smart_suite_hero.png)
+![SSG Smart Suite Hero Banner](web/assets/ssg_smart_suite_hero.png)
 
 ---
 
