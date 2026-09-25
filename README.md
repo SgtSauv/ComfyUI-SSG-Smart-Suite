@@ -93,7 +93,7 @@ Restart ComfyUI.
 
 ## 🎮 SSG Smart HUD Command Deck (`Alt + S`)
 
-![SSG Smart HUD Command Deck](assets/ssg_smart_hud.png)
+![SSG Smart HUD Command Deck](web/assets/ssg_smart_hud.png)
 
 Press **`Alt + S`** (or click the floating **SSG HUD** button) to open the Command Deck:
 * 🔍 **Filter & Search:** Filter across channels, tracks, aliases, and paired modules in real time.
@@ -114,25 +114,25 @@ Press **`Alt + S`** (or click the floating **SSG HUD** button) to open the Comma
 
 ### 1. SSG Smart Pipe (`SSGSmartPipe`)
 
-![SSG Smart Pipe](assets/node_pipe.png)
+![SSG Smart Pipe](web/assets/node_pipe.png)
 
 Master signal broadcaster bundling up to 24 arbitrary lanes (`MODEL`, `CLIP`, `VAE`, `LATENT`, Prompts, etc.) into a named wireless bus. Spawns in Edit Mode with wildcard parking dots (`"◦"`); click `[ Lock Schema ]` to serialize and broadcast.
 
 ### 2. SSG Smart Satellite (`SSGSmartSatellite`)
 
-![SSG Smart Satellite](assets/node_satellite.png)
+![SSG Smart Satellite](web/assets/node_satellite.png)
 
 Multi-track bus receiver consuming signal subsets from active Pipe or Router channels across the root canvas or within subgraphs. Select a channel, click `[ Spawn Tracks ]`, connect needed outputs, and click `[ Prune Unused ]` to collapse unlinked slots while preserving track indexing.
 
 ### 3. SSG Smart Router (`SSGSmartRouter`)
 
-![SSG Smart Router](assets/node_router.png)
+![SSG Smart Router](web/assets/node_router.png)
 
 A/B crossbar selector for comparing models, conditioning stacks, or pipelines. Connect paired inputs (`A0`/`B0` through `A11`/`B11`). Toggling Bank A / Bank B switches downstream receivers instantly without severing wires. All inputs on both banks are tagged with native ComfyUI lazy evaluation, so the graph compiler treats the inactive bank as completely detached for that run. This results in zero VRAM usage and zero compute time on the dormant branch.
 
 ### 4. SSG Smart Gate Trio (`SSGSmartGate`, `SSGSmartGateRelay`, `SSGSmartGateReturn`)
 
-![SSG Smart Gate Trio](assets/node_gate_trio.png)
+![SSG Smart Gate Trio](web/assets/node_gate_trio.png)
 
 * **Master Gate:** Inline valve managing `{Channel}_TX` and `{Channel}_RX` streams.
 * **Gate Relay:** Placed at loop entry to receive live `{Channel}_TX` data.
@@ -141,7 +141,7 @@ A/B crossbar selector for comparing models, conditioning stacks, or pipelines. C
 
 ### 5. SSG Smart Vault (`SSGSmartVault`)
 
-![SSG Smart Vault](assets/node_vault.png)
+![SSG Smart Vault](web/assets/node_vault.png)
 
 Inline tensor buffer and execution severer for prompt iteration and caching utilizing native ComfyUI lazy evaluation, meaning zero compute time and zero VRAM usage for all cached upstream tensors while in Playback mode:
 * ⚡ **`[ PLAYBACK ]` (Mint Green):** Severs upstream dependencies during prompt compilation; outputs cached tensors from memory with zero upstream computation.
@@ -150,13 +150,13 @@ Inline tensor buffer and execution severer for prompt iteration and caching util
 
 ### 6. SSG Smart Socket (`SSGSmartSocket`)
 ---
-![SSG Smart Socket](assets/node_socket.png)
+![SSG Smart Socket](web/assets/node_socket.png)
 ---
 Universal in-line transceiver that dynamically morphs its physical inputs and outputs to host zero-wire companion modules from the SSG Smart Modules pack. Enforces strict 1:1 tenant pairing and escalates to Tier 2 Fire Opal Orange if vacant.
 
 ### 7. SSG Smart Tag (`SSGSmartTag`)
 
-![SSG Smart Tag](assets/node_tag.png)
+![SSG Smart Tag](web/assets/node_tag.png)
 
 Single-slot passthrough node acting as an explicit naming boundary and datatype override for upstream anchor sniffing. The SSG TX nodes utilize a recursive drill engine to auto-name slot inputs upon connection. The tag can be used prior to those nodes to override what the drill decided on. *CUSTOM NAMED NODES* are also used to name incoming slot connections.
 

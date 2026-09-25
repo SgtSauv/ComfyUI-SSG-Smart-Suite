@@ -1672,7 +1672,7 @@ function renderSimpleMarkdown(mdText, extensionFolder = "ComfyUI-SSG-Smart-Suite
     text = text.replace(/\[!\[(.*?)\]\((.*?)\)\]\((.*?)\)/g, (match, alt, imgSrc, targetUrl) => {
         let cleanImgSrc = imgSrc.trim();
         if (!cleanImgSrc.startsWith("http://") && !cleanImgSrc.startsWith("https://") && !cleanImgSrc.startsWith("data:")) {
-            cleanImgSrc = cleanImgSrc.replace(/^\.?\//, "");
+            cleanImgSrc = cleanImgSrc.replace(/^(\.\/|\/)?(web\/)?/, "");
             cleanImgSrc = `/extensions/${extensionFolder}/${cleanImgSrc}`;
         }
         return `<a href="${targetUrl.trim()}" target="_blank" rel="noopener noreferrer"><img src="${cleanImgSrc}" alt="${alt}" class="ssg-docs-img-badge" /></a>`;
@@ -1681,7 +1681,7 @@ function renderSimpleMarkdown(mdText, extensionFolder = "ComfyUI-SSG-Smart-Suite
     text = text.replace(/!\[(.*?)\]\((.*?)\)/g, (match, alt, src) => {
         let cleanSrc = src.trim();
         if (!cleanSrc.startsWith("http://") && !cleanSrc.startsWith("data:")) {
-            cleanSrc = cleanSrc.replace(/^\.?\//, "");
+            cleanSrc = cleanSrc.replace(/^(\.\/|\/)?(web\/)?/, "");
             cleanSrc = `/extensions/${extensionFolder}/${cleanSrc}`;
         }
         return `<img src="${cleanSrc}" alt="${alt}" class="ssg-docs-img" />`;
